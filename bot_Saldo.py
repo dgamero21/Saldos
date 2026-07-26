@@ -230,7 +230,7 @@ def marcar_procesado(mensaje_id, label_id):
     ).execute()
 
 
-# ---------- Extracción y Parsing ----------
+# ---------- Helper Funciones y Parsing ----------
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
@@ -284,7 +284,7 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Extrae Fecha Cierre, Fecha Vencimiento y Monto Total usando palabras clave configurables."""
+    """Extrae datos usando ÚNICAMENTE las palabras clave indicadas en la hoja Datos."""
     texto_unido = texto_pdf + "\n" + texto_mail
     
     fecha_cierre = ""
@@ -293,49 +293,27 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
 
     PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
 
-    # 1. Búsqueda con palabra clave personalizada de Cierre (desde la hoja Datos)
-    if kw_cierre:
-        m_c = re.search(re.escape(kw_cierre) + r'[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_c:
-            fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
+    # 1. Extracción de Fecha Cierre con la palabra clave exacta de la hoja Datos
+    kw_cierre_target = kw_cierre.strip() if kw_cierre else "CIERRE ACTUAL"
+    m_c = re.search(re.escape(kw_cierre_target) + r'[\s\S]{0,40}?[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+    if m_c:
+        fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
 
-    # 2. Búsqueda con palabra clave personalizada de Vencimiento (desde la hoja Datos)
-    if kw_vto:
-        m_v = re.search(re.escape(kw_vto) + r'[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_v:
-            fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
+    # 2. Extracción de Fecha Vencimiento con la palabra clave exacta de la hoja Datos
+    kw_vto_target = kw_vto.strip() if kw_vto else "VENCIMIENTO"
+    m_v = re.search(re.escape(kw_vto_target) + r'[\s\S]{0,60}?(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})', texto_unido, re.IGNORECASE)
+    if m_v:
+        fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
 
-    # 3. Patrones por defecto si no están definidos en Datos
-    if not fecha_cierre:
-        m_cierre = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_cierre:
-            fecha_cierre = convertir_fecha_texto(m_cierre.group(1), m_cierre.group(2), m_cierre.group(3))
-
-    if not fecha_vencimiento:
-        m_vto = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_vto:
-            fecha_vencimiento = convertir_fecha_texto(m_vto.group(1), m_vto.group(2), m_vto.group(3))
-
-    # 4. Fallbacks que ignoran explícitamente palabras como 'ANTERIOR' o 'ANT.'
-    if not fecha_cierre:
-        m_cierre_alt = re.search(r'(?<!ANTERIOR\s)(?<!ANT\.\s)CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_cierre_alt:
-            fecha_cierre = convertir_fecha_texto(m_cierre_alt.group(1), m_cierre_alt.group(2), m_cierre_alt.group(3))
-
-    if not fecha_vencimiento:
-        m_vto_alt = re.search(r'(?<!ANTERIOR\s)(?<!ANT\.\s)(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-        if m_vto_alt:
-            fecha_vencimiento = convertir_fecha_texto(m_vto_alt.group(1), m_vto_alt.group(2), m_vto_alt.group(3))
-
-    # Fallbacks de respaldo final
+    # Fallbacks de respaldo en caso de celda vacía en Datos
     if not fecha_cierre:
         fecha_cierre = fecha_mail_fmt
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 5. Buscar Monto Total con palabra clave personalizada o patrón por defecto
-    patron_monto = re.escape(kw_monto) if kw_monto else r'(?:Monto|TOTAL A PAGAR|TOTAL PESOS|Saldo a Pagar|Saldo Total)'
-    m_monto = re.search(patron_monto + r'\s*[:\$]?\s*\$?\s*([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
+    # 3. Extracción del Monto Total con la palabra clave exacta de la hoja Datos
+    kw_monto_target = kw_monto.strip() if kw_monto else "SALDO $"
+    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,60}?([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
             monto_total = normalizar_monto(m_monto.group(1))
@@ -346,12 +324,12 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
 
 
 def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
-    regex_personalizado = regla.get("Regex_Consumo", "")
+    regex_personalizado = str(regla.get("Regex_Consumo", "")).strip()
     kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
     kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
     kw_monto = str(regla.get("Regex_Monto", "")).strip()
 
-    patron = re.compile(regex_personalizado.strip() or REGEX_CONSUMO_DEFAULT)
+    patron = re.compile(regex_personalizado or REGEX_CONSUMO_DEFAULT)
     consumos = []
     texto_completo_pdf = ""
 
