@@ -253,7 +253,7 @@ def marcar_procesado(mensaje_id, label_id):
     ).execute()
 
 
-# ---------- Parsing y Extracción con Validaciones ----------
+# ---------- Normalización Numérica y de Fechas ----------
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
@@ -265,7 +265,13 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
-    return float(texto.replace('.', '').replace(',', '.'))
+    """Soporta montos con coma (14439,4), punto (17161.6) y estilo argentino (331.244,18)."""
+    t = str(texto).replace('$', '').strip()
+    if '.' in t and ',' in t:
+        t = t.replace('.', '').replace(',', '.')
+    elif ',' in t:
+        t = t.replace(',', '.')
+    return round(float(t), 2)
 
 
 def formatear_fecha_consumo(fecha_str):
@@ -318,8 +324,10 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Extrae Fecha Cierre, Fecha Vencimiento y Monto Total con estricta validación de calendario."""
-    texto_unido = texto_pdf + "\n" + texto_mail
+    """Extrae datos filtrando líneas de contrato y con soporte para montos con punto o coma."""
+    # Eliminar líneas que contengan 'Contrato:' para no leer datos irrelevantes del pie
+    lineas_limpias = [l for l in (texto_pdf + "\n" + texto_mail).split("\n") if "CONTRATO:" not in l.upper()]
+    texto_unido = "\n".join(lineas_limpias)
     
     fecha_cierre = ""
     fecha_vencimiento = ""
@@ -337,7 +345,7 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
 
     # 2. Extracción de Fecha Vencimiento
     kw_vto_target = kw_vto.strip() if kw_vto else "VENCIMIENTO"
-    for m in re.finditer(re.escape(kw_vto_target) + r'[\s\S]{0,80}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
+    for m in re.finditer(re.escape(kw_vto_target) + r'[\s\S]{0,120}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
         f_cand = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
         if f_cand:
             fecha_vencimiento = f_cand
@@ -349,9 +357,9 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 3. Extracción del Monto Total
+    # 3. Extracción del Monto Total (acepta punto o coma)
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
-    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,80}?[\$]?\s*([\d.]*,\d{1,2})', texto_unido, re.IGNORECASE)
+    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,80}?[\$]?\s*([\d.]+(?:[.,]\d{1,2})?)', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
             monto_total = normalizar_monto(m_monto.group(1))
