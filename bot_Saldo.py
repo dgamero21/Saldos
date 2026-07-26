@@ -41,13 +41,18 @@ LABEL_PROCESADO = "Procesado-Resumen"
 from zoneinfo import ZoneInfo
 
 def debe_ejecutar_ahora():
-    if os.environ.get("FORZAR_EJECUCION", "false").lower() == "true":
+    forzar = os.environ.get("FORZAR_EJECUCION", "false").lower()
+    print(f"[DEBUG] FORZAR_EJECUCION env var: '{forzar}'")
+    if forzar == "true":
+        print("[DEBUG] ✅ Ejecución FORZADA - ignorando hora del Config sheet")
         return True
 
+    print("[DEBUG] Verificando hora del Config sheet...")
     sh = gc.open_by_key(SHEET_ID)
     ws_config = sh.worksheet("Config")
     filas = ws_config.get_all_records()
     if not filas:
+        print("[DEBUG] No hay configuración en Config sheet, ejecutando...")
         return True  # si no hay configuración, ejecuta siempre
 
     hora_deseada = str(filas[0].get("Hora_Ejecucion", "")).strip()
@@ -83,18 +88,26 @@ def obtener_o_crear_label(nombre):
 
 
 def obtener_reglas():
+    print("[DEBUG] Leyendo reglas de la hoja Datos...")
     sh = gc.open_by_key(SHEET_ID)
     ws_datos = sh.worksheet("Datos")
     filas = ws_datos.get_all_records()
-    return [f for f in filas if str(f.get("Activo", "")).strip().upper() == "SI"]
+    reglas_activas = [f for f in filas if str(f.get("Activo", "")).strip().upper() == "SI"]
+    print(f"[DEBUG] Reglas activas encontradas: {len(reglas_activas)}")
+    for i, r in enumerate(reglas_activas, 1):
+        print(f"  Regla {i}: Remitente={r.get('Remitente')}, Asunto={r.get('Asunto_Contiene', '')}")
+    return reglas_activas
 
 
 def buscar_mails_nuevos(remitente, asunto_contiene):
     query = f"from:{remitente} -label:{LABEL_PROCESADO}"
     if asunto_contiene:
         query += f' subject:"{asunto_contiene}"'
+    print(f"[DEBUG] Buscando mails con query: {query}")
     resultados = gmail_service.users().messages().list(userId="me", q=query).execute()
-    return resultados.get("messages", [])
+    mails_encontrados = resultados.get("messages", [])
+    print(f"[DEBUG] Mails encontrados: {len(mails_encontrados)}")
+    return mails_encontrados
 
 
 def limpiar_html(texto_html):
@@ -196,14 +209,23 @@ def marcar_procesado(mensaje_id, label_id):
 
 
 def revisar_mails():
+    print("\n" + "="*60)
+    print("[INICIO] revisar_mails()")
+    print("="*60)
     label_id = obtener_o_crear_label(LABEL_PROCESADO)
+    print(f"[DEBUG] Label ID: {label_id}")
     reglas = obtener_reglas()
     total_procesados = 0
 
-    for regla in reglas:
+    print(f"[DEBUG] Procesando {len(reglas)} reglas...\n")
+    for idx, regla in enumerate(reglas, 1):
+        print(f"\n--- Regla {idx} ---")
         remitente = regla["Remitente"]
         asunto_contiene = regla.get("Asunto_Contiene", "")
         clave = str(regla.get("Clave", "")).strip()
+        print(f"[DEBUG] Remitente: {remitente}")
+        print(f"[DEBUG] Asunto contiene: '{asunto_contiene}'")
+        print(f"[DEBUG] Clave PDF: {'[configurada]' if clave else '[sin clave]'}")
         nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
         for m in nuevos:
@@ -230,7 +252,9 @@ def revisar_mails():
             marcar_procesado(m["id"], label_id)
             total_procesados += 1
 
-    print(f"{total_procesados} mail(s) procesado(s)." if total_procesados else "Sin mails nuevos.")
+    print(f"\n" + "="*60)
+    print(f"[RESULTADO] {total_procesados} mail(s) procesado(s).")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
