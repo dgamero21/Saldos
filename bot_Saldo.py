@@ -211,9 +211,8 @@ def formatear_fecha(fecha_rfc2822):
         return fecha_rfc2822
 
 
-def guardar_en_sheet(fecha, asunto, resumen, remitente, link_drive=""):
-    sh = gc.open_by_key(SHEET_ID)
-    ws = sh.worksheet(SHEET_NAME)
+def guardar_en_sheet(ws, fecha, asunto, resumen, remitente, link_drive=""):
+    """Agrega una fila al worksheet ya abierto (evita abrir la hoja en cada mail)."""
     ws.append_row([formatear_fecha(fecha), remitente, asunto, resumen, link_drive])
 
 
@@ -231,6 +230,17 @@ def revisar_mails():
     print(f"[DEBUG] Label ID: {label_id}")
     reglas = obtener_reglas()
     total_procesados = 0
+
+    # Abrir las hojas UNA SOLA VEZ para evitar exceder la cuota de la API de Sheets
+    print("[DEBUG] Abriendo hojas de Sheets (una sola vez)...")
+    sh = gc.open_by_key(SHEET_ID)
+    ws_consolidado = sh.worksheet(SHEET_NAME)
+    try:
+        ws_consumos = sh.worksheet("Consumos")
+    except gspread.WorksheetNotFound:
+        print("[DEBUG] Hoja 'Consumos' no existe, se omitirá el guardado de consumos.")
+        ws_consumos = None
+    print("[DEBUG] Hojas abiertas correctamente.")
 
     print(f"[DEBUG] Procesando {len(reglas)} reglas...\n")
     for idx, regla in enumerate(reglas, 1):
@@ -255,11 +265,12 @@ def revisar_mails():
                         link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
                         regex_personalizado = regla.get("Regex_Consumo", "")
                         consumos = extraer_consumos_pdf(pdf_sin_clave, regex_personalizado)
-                        guardar_consumos_sheet(consumos, remitente, link_drive)
+                        if ws_consumos is not None:
+                            guardar_consumos_sheet(ws_consumos, consumos, remitente, link_drive)
                     except pikepdf.PasswordError:
                         resumen = "ERROR: la clave del Sheet no coincide con la del PDF"
 
-            guardar_en_sheet(fecha, asunto, resumen, remitente, link_drive)
+            guardar_en_sheet(ws_consolidado, fecha, asunto, resumen, remitente, link_drive)
             texto_telegram = f"📩 Recibiste tu resumen\nDe: {remitente}\nAsunto: {asunto}"
             if link_drive:
                 texto_telegram += f"\nPDF: {link_drive}"
@@ -299,16 +310,15 @@ def extraer_consumos_pdf(pdf_bytes, regex_personalizado=""):
     return consumos
 
 
-def guardar_consumos_sheet(consumos, remitente, link_drive):
+def guardar_consumos_sheet(ws_consumos, consumos, remitente, link_drive):
+    """Agrega filas de consumos al worksheet ya abierto (evita abrir la hoja en cada mail)."""
     if not consumos:
         return
-    sh = gc.open_by_key(SHEET_ID)
-    ws = sh.worksheet("Consumos")
     filas = [
         [c["fecha"], c["comprobante"], c["detalle"], c["pesos"], c["dolar"], remitente, link_drive]
         for c in consumos
     ]
-    ws.append_rows(filas)
+    ws_consumos.append_rows(filas)
 
 
 if __name__ == "__main__":
