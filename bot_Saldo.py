@@ -272,15 +272,27 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
     fecha_vencimiento = ""
     monto_total = 0.0
 
-    # 1. Buscar Cierre
-    m_cierre = re.search(r'(?:CIERRE|Cierre)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
-    if m_cierre:
-        fecha_cierre = formatear_fecha_consumo(m_cierre.group(1))
+    # 1. Estrategia Tabular Multicolumna de BNA PDF:
+    # "CIERRE ACTUAL    VENCIMIENTO ACTUAL"
+    # "18.06.26         01.07.26"
+    m_dos_col = re.search(
+        r'CIERRE\s+ACTUAL\s+VENCIMIENTO\s+ACTUAL[\s\n]*(\d{2}[./-]\d{2}[./-]\d{2,4})\s+(\d{2}[./-]\d{2}[./-]\d{2,4})',
+        texto_unido, re.IGNORECASE
+    )
+    if m_dos_col:
+        fecha_cierre = formatear_fecha_consumo(m_dos_col.group(1))
+        fecha_vencimiento = formatear_fecha_consumo(m_dos_col.group(2))
 
-    # 2. Buscar Vencimiento
-    m_vto = re.search(r'(?:VENCIMIENTO|Vencimiento|Fecha Vto|VTO|Vto)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
-    if m_vto:
-        fecha_vencimiento = formatear_fecha_consumo(m_vto.group(1))
+    # 2. Estrategia de búsqueda directa en línea:
+    if not fecha_cierre:
+        m_cierre = re.search(r'(?:CIERRE|Cierre)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
+        if m_cierre:
+            fecha_cierre = formatear_fecha_consumo(m_cierre.group(1))
+
+    if not fecha_vencimiento:
+        m_vto = re.search(r'(?:Fecha Vto|VENCIMIENTO|Vencimiento|VTO|Vto)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
+        if m_vto:
+            fecha_vencimiento = formatear_fecha_consumo(m_vto.group(1))
 
     # Fallbacks de Fechas
     if not fecha_cierre:
