@@ -294,8 +294,8 @@ def extraer_consumos_pdf(pdf_bytes, regex_personalizado=""):
     return consumos
 
 
-def guardar_consumos_sheet(ws_consumos, consumos, remitente, link_drive, fecha_resumen):
-    """Agrega filas de consumos a la hoja 'Consumos'."""
+def guardar_consumos_sheet(ws_consumos, consumos, remitente, fecha_resumen):
+    """Agrega filas de consumos a la hoja 'Consumos' (sin link de drive)."""
     if not consumos:
         return
     filas = [
@@ -308,8 +308,7 @@ def guardar_consumos_sheet(ws_consumos, consumos, remitente, link_drive, fecha_r
             c["pesos"],
             c["dolar"],
             fecha_resumen,
-            remitente,
-            link_drive
+            remitente
         ]
         for c in consumos
     ]
