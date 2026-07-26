@@ -1,9 +1,15 @@
-name: Revisar mails BNA
+name: Revisar mails
 
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      forzar:
+        description: 'Forzar ejecucion (ignora la hora del Sheet)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   revisar:
@@ -28,4 +34,5 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          FORZAR_EJECUCION: ${{ github.event.inputs.forzar }}
         run: python bot_Saldo.py
