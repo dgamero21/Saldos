@@ -213,7 +213,7 @@ def formatear_fecha_resumen(fecha_rfc2822):
 
 
 def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
-    """Guarda en Consolidado usando USER_ENTERED para que no ponga el apóstrofe '."""
+    """Guarda en Consolidado con USER_ENTERED para que no se agregue el apóstrofe '."""
     ws.append_row([
         formatear_fecha_resumen(fecha_rfc),
         remitente,
@@ -234,6 +234,12 @@ def marcar_procesado(mensaje_id, label_id):
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
+MESES_ESPANOL = {
+    'ENE': '01', 'FEB': '02', 'MAR': '03', 'ABR': '04',
+    'MAY': '05', 'JUN': '06', 'JUL': '07', 'AGO': '08',
+    'SEP': '09', 'SET': '09', 'OCT': '10', 'NOV': '11', 'DIC': '12'
+}
+
 
 def normalizar_monto(texto):
     return float(texto.replace('.', '').replace(',', '.'))
@@ -247,6 +253,19 @@ def formatear_fecha_consumo(fecha_str):
             anio = "20" + anio
         return f"{dia.zfill(2)}/{mes.zfill(2)}/{anio}"
     return fecha_str
+
+
+def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
+    mes_str = str(mes_or_num).strip().upper()
+    if mes_str in MESES_ESPANOL:
+        mes_num = MESES_ESPANOL[mes_str]
+    elif mes_str.isdigit():
+        mes_num = mes_str.zfill(2)
+    else:
+        mes_num = "01"
+        
+    anio_full = "20" + anio_str if len(anio_str) == 2 else anio_str
+    return f"{dia_str.zfill(2)}/{mes_num}/{anio_full}"
 
 
 def es_pago_realizado(detalle_texto):
@@ -265,61 +284,43 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
-    """Extrae Fecha de Cierre, Fecha de Vencimiento y Monto Total reconociendo PROXIMO CIERRE y PROXIMO VTO."""
+    """Extrae Fecha de Cierre, Fecha de Vencimiento y Monto Total excluyendo 'ANTERIOR'."""
     texto_unido = texto_pdf + "\n" + texto_mail
     
     fecha_cierre = ""
     fecha_vencimiento = ""
     monto_total = 0.0
 
-    # 1. Estrategia Multicolumna BNA PDF con PROXIMO CIERRE / PROXIMO VTO
-    m_dos_col = re.search(
-        r'(?:PROXIMO|PRÓXIMO|CIERRE)\s*(?:CIERRE|ACTUAL)?[\s\S]{0,40}?(?:PROXIMO|PRÓXIMO|PROX\.)?\s*(?:VTO|VENCIMIENTO)[\s\n]*(\d{2}[./-]\d{2}[./-]\d{2,4})\s+(\d{2}[./-]\d{2}[./-]\d{2,4})',
-        texto_unido, re.IGNORECASE
-    )
-    if m_dos_col:
-        fecha_cierre = formatear_fecha_consumo(m_dos_col.group(1))
-        fecha_vencimiento = formatear_fecha_consumo(m_dos_col.group(2))
+    PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
 
-    # 2. Búsqueda directa de Cierre
+    # 1. Buscar PROXIMO CIERRE / CIERRE ACTUAL (Ignora de forma estricta CIERRE ANTERIOR)
+    m_cierre = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+    if m_cierre:
+        fecha_cierre = convertir_fecha_texto(m_cierre.group(1), m_cierre.group(2), m_cierre.group(3))
+
+    # 2. Buscar PROXIMO VTO / VENCIMIENTO ACTUAL (Ignora de forma estricta VTO ANTERIOR)
+    m_vto = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+    if m_vto:
+        fecha_vencimiento = convertir_fecha_texto(m_vto.group(1), m_vto.group(2), m_vto.group(3))
+
+    # 3. Fallbacks que excluyen explícitamente palabras como 'ANTERIOR' o 'ANT.'
     if not fecha_cierre:
-        m_cierre = re.search(
-            r'(?:PROXIMO\s+CIERRE|PRÓXIMO\s+CIERRE|CIERRE\s+ACTUAL|CIERRE\s+PROXIMO|CIERRE)[^\d\n]*[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})',
-            texto_unido, re.IGNORECASE
-        )
-        if m_cierre:
-            fecha_cierre = formatear_fecha_consumo(m_cierre.group(1))
+        m_cierre_alt = re.search(r'(?<!ANTERIOR\s)(?<!ANT\.\s)CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_cierre_alt:
+            fecha_cierre = convertir_fecha_texto(m_cierre_alt.group(1), m_cierre_alt.group(2), m_cierre_alt.group(3))
 
-    # 3. Búsqueda directa de Vencimiento
     if not fecha_vencimiento:
-        m_vto = re.search(
-            r'(?:PROXIMO\s+VTO|PRÓXIMO\s+VTO|PROX\.?\s*VTO|PROXIMO\s+VENCIMIENTO|PRÓXIMO\s+VENCIMIENTO|FECHA\s+DE\s+VENCIMIENTO|VENCIMIENTO\s+ACTUAL|VENCIMIENTO|VTO|PAGO\s+HASTA)[^\d\n]*[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})',
-            texto_unido, re.IGNORECASE
-        )
-        if m_vto:
-            fecha_vencimiento = formatear_fecha_consumo(m_vto.group(1))
+        m_vto_alt = re.search(r'(?<!ANTERIOR\s)(?<!ANT\.\s)(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_vto_alt:
+            fecha_vencimiento = convertir_fecha_texto(m_vto_alt.group(1), m_vto_alt.group(2), m_vto_alt.group(3))
 
-    # 4. Fallback Cierre desde impuestos bancarios
+    # Fallbacks de respaldo final
     if not fecha_cierre:
-        m_imp = re.search(r'(\d{2}\.\d{2}\.\d{2})\s+.*(?:IMPUESTO|INTERESES|SELLOS)', texto_pdf)
-        if m_imp:
-            fecha_cierre = formatear_fecha_consumo(m_imp.group(1))
-        else:
-            fecha_cierre = fecha_mail_fmt
-
-    # 5. Fallback Inteligente de Vencimiento: busca fechas distintas a Cierre en los primeros 2000 caracteres
-    if not fecha_vencimiento or fecha_vencimiento == fecha_cierre:
-        todas_fechas = re.findall(r'\b(\d{2}[./-]\d{2}[./-]\d{2,4})\b', texto_unido[:2000])
-        for f in todas_fechas:
-            f_fmt = formatear_fecha_consumo(f)
-            if f_fmt != fecha_cierre:
-                fecha_vencimiento = f_fmt
-                break
-
+        fecha_cierre = fecha_mail_fmt
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 6. Buscar Monto Total
+    # 4. Buscar Monto Total
     m_monto = re.search(r'(?:Monto|TOTAL A PAGAR|TOTAL PESOS|Saldo a Pagar|Saldo Total)\s*[:\$]?\s*\$?\s*([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
@@ -368,7 +369,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regex_personaliz
 
 
 def guardar_consumos_sheet(ws_consumos, consumos, remitente):
-    """Guarda consumos usando USER_ENTERED para eliminar el apóstrofe '."""
+    """Guarda consumos en la hoja usando USER_ENTERED para eliminar el apóstrofe '."""
     if not consumos:
         return
     filas = [
