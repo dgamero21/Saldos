@@ -36,8 +36,29 @@ gmail_service = build("gmail", "v1", credentials=creds)
 drive_service = build("drive", "v3", credentials=creds)
 gc = gspread.authorize(creds)
 
-LABEL_PROCESADO = "Procesado-BNA"
+LABEL_PROCESADO = "Procesado-Resumen"
+from zoneinfo import ZoneInfo
 
+def debe_ejecutar_ahora():
+    sh = gc.open_by_key(SHEET_ID)
+    ws_config = sh.worksheet("Config")
+    filas = ws_config.get_all_records()
+    if not filas:
+        return True  # si no hay configuración, ejecuta siempre
+
+    hora_deseada = str(filas[0].get("Hora_Ejecucion", "")).strip()
+    if not hora_deseada:
+        return True
+
+    ahora = datetime.now(ZoneInfo("America/Argentina/Cordoba"))
+    try:
+        hora_h, hora_m = map(int, hora_deseada.split(":"))
+    except ValueError:
+        return True
+
+    deseado_minutos = hora_h * 60 + hora_m
+    actual_minutos = ahora.hour * 60 + ahora.minute
+    return abs(actual_minutos - deseado_minutos) <= 7
 
 # ---------- Funciones ----------
 def enviar_telegram(mensaje):
@@ -206,4 +227,7 @@ def revisar_mails():
 
 
 if __name__ == "__main__":
-    revisar_mails()
+    if debe_ejecutar_ahora():
+        revisar_mails()
+    else:
+        print("Todavía no es la hora configurada en el Sheet.")
