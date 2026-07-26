@@ -4,6 +4,7 @@ import io
 import base64
 import email.utils
 from datetime import datetime
+import traceback
 
 import requests
 import gspread
@@ -13,29 +14,43 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-# ---------- Configuración desde variables de entorno (secrets) ----------
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-SHEET_ID = os.environ["SHEET_ID"]
-SHEET_NAME = "Consolidado"
+print("[INICIO] Inicializando bot_Saldo.py...")
 
-creds = Credentials(
-    token=None,
-    refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
-    client_id=os.environ["GOOGLE_CLIENT_ID"],
-    client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-    token_uri="https://oauth2.googleapis.com/token",
-    scopes=[
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.file",
-    ],
-)
+try:
+    # ---------- Configuración desde variables de entorno (secrets) ----------
+    TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+    TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+    SHEET_ID = os.environ["SHEET_ID"]
+    SHEET_NAME = "Consolidado"
 
-gmail_service = build("gmail", "v1", credentials=creds)
-drive_service = build("drive", "v3", credentials=creds)
-gc = gspread.authorize(creds)
+    print(f"[DEBUG] SHEET_ID: {SHEET_ID[:20]}...")
+    
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
+        ],
+    )
+    print("[DEBUG] Credenciales de Google creadas")
+
+    gmail_service = build("gmail", "v1", credentials=creds)
+    print("[DEBUG] Gmail service inicializado")
+    drive_service = build("drive", "v3", credentials=creds)
+    print("[DEBUG] Drive service inicializado")
+    gc = gspread.authorize(creds)
+    print("[DEBUG] Gspread client inicializado")
+    
+except Exception as e:
+    print(f"[ERROR] Fallo durante la inicialización: {str(e)}")
+    print(f"[ERROR] Traceback: {traceback.format_exc()}")
+    raise
 
 LABEL_PROCESADO = "Procesado-Resumen"
 from zoneinfo import ZoneInfo
@@ -257,8 +272,7 @@ def revisar_mails():
     print("="*60 + "\n")
 
 
-if __name__ == "__main__":
-    REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
+REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
 
 def normalizar_monto(texto):
@@ -295,7 +309,18 @@ def guardar_consumos_sheet(consumos, remitente, link_drive):
         for c in consumos
     ]
     ws.append_rows(filas)
-    if debe_ejecutar_ahora():
-        revisar_mails()
-    else:
-        print("Todavía no es la hora configurada en el Sheet.")
+
+
+if __name__ == "__main__":
+    print("[MAIN] Iniciando ejecución principal...")
+    try:
+        if debe_ejecutar_ahora():
+            print("[MAIN] Ejecutando revisar_mails()...")
+            revisar_mails()
+        else:
+            print("[MAIN] Todavía no es la hora configurada en el Sheet.")
+    except Exception as e:
+        print(f"[MAIN] ERROR durante la ejecución: {str(e)}")
+        import traceback as _tb
+        print(f"[MAIN] Traceback: {_tb.format_exc()}")
+        raise
