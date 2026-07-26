@@ -213,7 +213,7 @@ def formatear_fecha_resumen(fecha_rfc2822):
 
 
 def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
-    """Guarda en Consolidado con USER_ENTERED para que no se agregue el apóstrofe '."""
+    """Guarda en Consolidado con USER_ENTERED para no anteponer apóstrofe '."""
     ws.append_row([
         formatear_fecha_resumen(fecha_rfc),
         remitente,
@@ -283,8 +283,8 @@ def extraer_cuotas(detalle_texto):
     return detalle_texto.strip(), 1, 1
 
 
-def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
-    """Extrae Fecha de Cierre, Fecha de Vencimiento y Monto Total excluyendo 'ANTERIOR'."""
+def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
+    """Extrae Fecha Cierre, Fecha Vencimiento y Monto Total usando palabras clave configurables."""
     texto_unido = texto_pdf + "\n" + texto_mail
     
     fecha_cierre = ""
@@ -293,17 +293,30 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
 
     PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
 
-    # 1. Buscar PROXIMO CIERRE / CIERRE ACTUAL (Ignora de forma estricta CIERRE ANTERIOR)
-    m_cierre = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-    if m_cierre:
-        fecha_cierre = convertir_fecha_texto(m_cierre.group(1), m_cierre.group(2), m_cierre.group(3))
+    # 1. Búsqueda con palabra clave personalizada de Cierre (desde la hoja Datos)
+    if kw_cierre:
+        m_c = re.search(re.escape(kw_cierre) + r'[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_c:
+            fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
 
-    # 2. Buscar PROXIMO VTO / VENCIMIENTO ACTUAL (Ignora de forma estricta VTO ANTERIOR)
-    m_vto = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-    if m_vto:
-        fecha_vencimiento = convertir_fecha_texto(m_vto.group(1), m_vto.group(2), m_vto.group(3))
+    # 2. Búsqueda con palabra clave personalizada de Vencimiento (desde la hoja Datos)
+    if kw_vto:
+        m_v = re.search(re.escape(kw_vto) + r'[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_v:
+            fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
 
-    # 3. Fallbacks que excluyen explícitamente palabras como 'ANTERIOR' o 'ANT.'
+    # 3. Patrones por defecto si no están definidos en Datos
+    if not fecha_cierre:
+        m_cierre = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_cierre:
+            fecha_cierre = convertir_fecha_texto(m_cierre.group(1), m_cierre.group(2), m_cierre.group(3))
+
+    if not fecha_vencimiento:
+        m_vto = re.search(r'(?:PROXIMO|PRÓXIMO|ACTUAL)\s+(?:VTO\.?|VENCIMIENTO)[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+        if m_vto:
+            fecha_vencimiento = convertir_fecha_texto(m_vto.group(1), m_vto.group(2), m_vto.group(3))
+
+    # 4. Fallbacks que ignoran explícitamente palabras como 'ANTERIOR' o 'ANT.'
     if not fecha_cierre:
         m_cierre_alt = re.search(r'(?<!ANTERIOR\s)(?<!ANT\.\s)CIERRE[^\d\n]*[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
         if m_cierre_alt:
@@ -320,8 +333,9 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 4. Buscar Monto Total
-    m_monto = re.search(r'(?:Monto|TOTAL A PAGAR|TOTAL PESOS|Saldo a Pagar|Saldo Total)\s*[:\$]?\s*\$?\s*([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
+    # 5. Buscar Monto Total con palabra clave personalizada o patrón por defecto
+    patron_monto = re.escape(kw_monto) if kw_monto else r'(?:Monto|TOTAL A PAGAR|TOTAL PESOS|Saldo a Pagar|Saldo Total)'
+    m_monto = re.search(patron_monto + r'\s*[:\$]?\s*\$?\s*([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
             monto_total = normalizar_monto(m_monto.group(1))
@@ -331,7 +345,12 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
     return fecha_cierre, fecha_vencimiento, monto_total
 
 
-def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regex_personalizado=""):
+def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
+    regex_personalizado = regla.get("Regex_Consumo", "")
+    kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
+    kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
+    kw_monto = str(regla.get("Regex_Monto", "")).strip()
+
     patron = re.compile(regex_personalizado.strip() or REGEX_CONSUMO_DEFAULT)
     consumos = []
     texto_completo_pdf = ""
@@ -340,7 +359,9 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regex_personaliz
         for pagina in pdf.pages:
             texto_completo_pdf += (pagina.extract_text() or "") + "\n"
 
-        fecha_cierre, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global(texto_completo_pdf, texto_mail, fecha_mail_fmt)
+        fecha_cierre, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global(
+            texto_completo_pdf, texto_mail, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto
+        )
 
         for linea in texto_completo_pdf.split("\n"):
             m = patron.match(linea.strip())
@@ -369,7 +390,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regex_personaliz
 
 
 def guardar_consumos_sheet(ws_consumos, consumos, remitente):
-    """Guarda consumos en la hoja usando USER_ENTERED para eliminar el apóstrofe '."""
+    """Guarda consumos usando USER_ENTERED para eliminar el apóstrofe '."""
     if not consumos:
         return
     filas = [
@@ -433,10 +454,9 @@ def revisar_mails():
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave)
                         link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
-                        regex_personalizado = regla.get("Regex_Consumo", "")
                         
                         consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
-                            pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regex_personalizado
+                            pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
                         )
                         
                         if ws_consumos is not None:
@@ -446,7 +466,10 @@ def revisar_mails():
 
             # Si no vino de un PDF con consumos, intentar extraer monto y vto del mail directamente
             if not fecha_vencimiento or monto_total == 0.0:
-                _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt)
+                kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
+                kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
+                kw_monto = str(regla.get("Regex_Monto", "")).strip()
+                _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
 
             guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
             
