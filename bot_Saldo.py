@@ -155,7 +155,7 @@ def extraer_texto(mensaje_id):
     if not cuerpo:
         cuerpo = limpiar_html(obtener_body(msg["payload"], "text/html"))
 
-    return asunto, fecha, cuerpo[:500]
+    return asunto, fecha, cuerpo
 
 
 def buscar_adjunto_pdf(mensaje_id):
@@ -205,7 +205,6 @@ def subir_a_drive(nombre_archivo, pdf_bytes):
 
 
 def formatear_fecha_resumen(fecha_rfc2822):
-    """Convierte fecha RFC2822 a formato DD/MM/YYYY."""
     try:
         dt = email.utils.parsedate_to_datetime(fecha_rfc2822)
         return dt.strftime("%d/%m/%Y")
@@ -213,9 +212,16 @@ def formatear_fecha_resumen(fecha_rfc2822):
         return fecha_rfc2822
 
 
-def guardar_en_sheet(ws, fecha_rfc, asunto, resumen, remitente, link_drive=""):
-    """Agrega una fila al worksheet Consolidado."""
-    ws.append_row([formatear_fecha_resumen(fecha_rfc), remitente, asunto, resumen, link_drive])
+def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
+    """Guarda en Consolidado: Fecha Mail, Remitente, Asunto, Monto Total, Fecha Vencimiento, Link Drive."""
+    ws.append_row([
+        formatear_fecha_resumen(fecha_rfc),
+        remitente,
+        asunto,
+        monto_total,
+        fecha_vencimiento,
+        link_drive
+    ])
 
 
 def marcar_procesado(mensaje_id, label_id):
@@ -224,7 +230,7 @@ def marcar_procesado(mensaje_id, label_id):
     ).execute()
 
 
-# ---------- Funciones para Extracción y Formateo de Consumos ----------
+# ---------- Extracción y Parsing ----------
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
@@ -234,7 +240,6 @@ def normalizar_monto(texto):
 
 
 def formatear_fecha_consumo(fecha_str):
-    """Convierte fechas tipo 04.11.24 o 04-11-2024 a formato DD/MM/YYYY."""
     partes = re.split(r'[.\/-]', fecha_str.strip())
     if len(partes) == 3:
         dia, mes, anio = partes
@@ -245,13 +250,11 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def es_pago_realizado(detalle_texto):
-    """Identifica si la transacción es un pago realizado por el usuario (para excluirlo)."""
     detalle_upper = detalle_texto.upper()
     return "SU PAGO" in detalle_upper or "PAGO EN PESOS" in detalle_upper or "PAGO EN DOLARES" in detalle_upper
 
 
 def extraer_cuotas(detalle_texto):
-    """Detecta patrones tipo C.21/24 y separa el detalle limpio, cuota actual y cuota total."""
     m = re.search(r'\s+C\.?\s*(\d+)\s*/\s*(\d+)', detalle_texto, re.IGNORECASE)
     if m:
         cuota_act = int(m.group(1))
@@ -261,41 +264,84 @@ def extraer_cuotas(detalle_texto):
     return detalle_texto.strip(), 1, 1
 
 
-def extraer_consumos_pdf(pdf_bytes, regex_personalizado=""):
+def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt):
+    """Extrae Fecha de Cierre, Fecha de Vencimiento y Monto Total del PDF/Mail."""
+    texto_unido = texto_pdf + "\n" + texto_mail
+    
+    fecha_cierre = ""
+    fecha_vencimiento = ""
+    monto_total = 0.0
+
+    # 1. Buscar Cierre
+    m_cierre = re.search(r'(?:CIERRE|Cierre)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
+    if m_cierre:
+        fecha_cierre = formatear_fecha_consumo(m_cierre.group(1))
+
+    # 2. Buscar Vencimiento
+    m_vto = re.search(r'(?:VENCIMIENTO|Vencimiento|Fecha Vto|VTO|Vto)\s*(?:ACTUAL)?[:\s]+(\d{2}[./-]\d{2}[./-]\d{2,4})', texto_unido)
+    if m_vto:
+        fecha_vencimiento = formatear_fecha_consumo(m_vto.group(1))
+
+    # Fallbacks de Fechas
+    if not fecha_cierre:
+        m_imp = re.search(r'(\d{2}\.\d{2}\.\d{2})\s+.*(?:IMPUESTO|INTERESES|SELLOS)', texto_pdf)
+        if m_imp:
+            fecha_cierre = formatear_fecha_consumo(m_imp.group(1))
+        else:
+            fecha_cierre = fecha_mail_fmt
+
+    if not fecha_vencimiento:
+        fecha_vencimiento = fecha_cierre
+
+    # 3. Buscar Monto Total
+    m_monto = re.search(r'(?:Monto|TOTAL A PAGAR|TOTAL PESOS|Saldo a Pagar|Saldo Total)\s*[:\$]?\s*\$?\s*([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
+    if m_monto:
+        try:
+            monto_total = normalizar_monto(m_monto.group(1))
+        except Exception:
+            monto_total = 0.0
+
+    return fecha_cierre, fecha_vencimiento, monto_total
+
+
+def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regex_personalizado=""):
     patron = re.compile(regex_personalizado.strip() or REGEX_CONSUMO_DEFAULT)
     consumos = []
+    texto_completo_pdf = ""
+
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for pagina in pdf.pages:
-            texto = pagina.extract_text() or ""
-            for linea in texto.split("\n"):
-                m = patron.match(linea.strip())
-                if m:
-                    fecha, comprobante, detalle, pesos, dolar = m.groups()
-                    
-                    # 1. Filtro: Omitir pagos realizados por el usuario ("SU PAGO...")
-                    if es_pago_realizado(detalle):
-                        continue
-                    
-                    # 2. Formatear Fecha de Consumo a DD/MM/YYYY
-                    fecha_formateada = formatear_fecha_consumo(fecha)
-                    
-                    # 3. Separar Cuota Actual, Cuota Total y Limpiar Detalle
-                    detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
-                    
-                    consumos.append({
-                        "fecha": fecha_formateada,
-                        "comprobante": comprobante or "",
-                        "detalle": detalle_limpio,
-                        "cuota_actual": cuota_actual,
-                        "cuota_total": cuota_total,
-                        "pesos": normalizar_monto(pesos),
-                        "dolar": normalizar_monto(dolar),
-                    })
-    return consumos
+            texto_completo_pdf += (pagina.extract_text() or "") + "\n"
+
+        fecha_cierre, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global(texto_completo_pdf, texto_mail, fecha_mail_fmt)
+
+        for linea in texto_completo_pdf.split("\n"):
+            m = patron.match(linea.strip())
+            if m:
+                fecha, comprobante, detalle, pesos, dolar = m.groups()
+                
+                if es_pago_realizado(detalle):
+                    continue
+                
+                fecha_formateada = formatear_fecha_consumo(fecha)
+                detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
+                
+                consumos.append({
+                    "fecha": fecha_formateada,
+                    "comprobante": comprobante or "",
+                    "detalle": detalle_limpio,
+                    "cuota_actual": cuota_actual,
+                    "cuota_total": cuota_total,
+                    "pesos": normalizar_monto(pesos),
+                    "dolar": normalizar_monto(dolar),
+                    "fecha_cierre": fecha_cierre,
+                    "fecha_vencimiento": fecha_vencimiento,
+                })
+
+    return consumos, fecha_cierre, fecha_vencimiento, monto_total
 
 
-def guardar_consumos_sheet(ws_consumos, consumos, remitente, fecha_resumen):
-    """Agrega filas de consumos a la hoja 'Consumos' (sin link de drive)."""
+def guardar_consumos_sheet(ws_consumos, consumos, remitente):
     if not consumos:
         return
     filas = [
@@ -307,7 +353,8 @@ def guardar_consumos_sheet(ws_consumos, consumos, remitente, fecha_resumen):
             c["cuota_total"],
             c["pesos"],
             c["dolar"],
-            fecha_resumen,
+            c["fecha_cierre"],
+            c["fecha_vencimiento"],
             remitente
         ]
         for c in consumos
@@ -346,9 +393,11 @@ def revisar_mails():
         nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
         for m in nuevos:
-            asunto, fecha, resumen = extraer_texto(m["id"])
+            asunto, fecha, cuerpo_texto = extraer_texto(m["id"])
             link_drive = ""
-            fecha_resumen = formatear_fecha_resumen(fecha)
+            fecha_mail_fmt = formatear_fecha_resumen(fecha)
+            monto_total = 0.0
+            fecha_vencimiento = ""
 
             if clave:
                 nombre_archivo, pdf_bytes = buscar_adjunto_pdf(m["id"])
@@ -357,17 +406,27 @@ def revisar_mails():
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave)
                         link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
                         regex_personalizado = regla.get("Regex_Consumo", "")
-                        consumos = extraer_consumos_pdf(pdf_sin_clave, regex_personalizado)
+                        
+                        consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
+                            pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regex_personalizado
+                        )
+                        
                         if ws_consumos is not None:
-                            guardar_consumos_sheet(ws_consumos, consumos, remitente, link_drive, fecha_resumen)
+                            guardar_consumos_sheet(ws_consumos, consumos, remitente)
                     except pikepdf.PasswordError:
-                        resumen = "ERROR: la clave del Sheet no coincide con la del PDF"
+                        print("[ERROR] Clave de PDF incorrecta")
 
-            guardar_en_sheet(ws_consolidado, fecha, asunto, resumen, remitente, link_drive)
-            texto_telegram = f"📩 Recibiste tu resumen\nDe: {remitente}\nAsunto: {asunto}"
+            # Si no vino de un PDF con consumos, intentar extraer monto y vto del mail directamente
+            if not fecha_vencimiento or monto_total == 0.0:
+                _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt)
+
+            guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
+            
+            texto_telegram = f"📩 Resumen Procesado\nDe: {remitente}\nAsunto: {asunto}\nMonto: ${monto_total:,.2f}\nVencimiento: {fecha_vencimiento}"
             if link_drive:
                 texto_telegram += f"\nPDF: {link_drive}"
             enviar_telegram(texto_telegram)
+            
             marcar_procesado(m["id"], label_id)
             total_procesados += 1
 
