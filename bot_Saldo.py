@@ -8,6 +8,7 @@ from datetime import datetime
 import requests
 import gspread
 import pikepdf
+import pdfplumber
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -212,6 +213,9 @@ def revisar_mails():
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave)
                         link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
+                        regex_personalizado = regla.get("Regex_Consumo", "")
+                        consumos = extraer_consumos_pdf(pdf_sin_clave, regex_personalizado)
+                        guardar_consumos_sheet(consumos, remitente, link_drive)
                     except pikepdf.PasswordError:
                         resumen = "ERROR: la clave del Sheet no coincide con la del PDF"
 
@@ -227,6 +231,43 @@ def revisar_mails():
 
 
 if __name__ == "__main__":
+    REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
+
+
+def normalizar_monto(texto):
+    return float(texto.replace('.', '').replace(',', '.'))
+
+
+def extraer_consumos_pdf(pdf_bytes, regex_personalizado=""):
+    patron = re.compile(regex_personalizado.strip() or REGEX_CONSUMO_DEFAULT)
+    consumos = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for pagina in pdf.pages:
+            texto = pagina.extract_text() or ""
+            for linea in texto.split("\n"):
+                m = patron.match(linea.strip())
+                if m:
+                    fecha, comprobante, detalle, pesos, dolar = m.groups()
+                    consumos.append({
+                        "fecha": fecha,
+                        "comprobante": comprobante or "",
+                        "detalle": detalle.strip(),
+                        "pesos": normalizar_monto(pesos),
+                        "dolar": normalizar_monto(dolar),
+                    })
+    return consumos
+
+
+def guardar_consumos_sheet(consumos, remitente, link_drive):
+    if not consumos:
+        return
+    sh = gc.open_by_key(SHEET_ID)
+    ws = sh.worksheet("Consumos")
+    filas = [
+        [c["fecha"], c["comprobante"], c["detalle"], c["pesos"], c["dolar"], remitente, link_drive]
+        for c in consumos
+    ]
+    ws.append_rows(filas)
     if debe_ejecutar_ahora():
         revisar_mails()
     else:
