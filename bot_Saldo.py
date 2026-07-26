@@ -103,15 +103,39 @@ def obtener_o_crear_label(nombre):
     return nuevo["id"]
 
 
+def obtener_valor_clave_flexible(registro, clave_buscada):
+    for k, v in registro.items():
+        if str(k).strip().lower() == clave_buscada.strip().lower():
+            return str(v).strip()
+    return ""
+
+
 def obtener_reglas():
     print("[DEBUG] Leyendo reglas de la hoja Datos...")
     sh = gc.open_by_key(SHEET_ID)
     ws_datos = sh.worksheet("Datos")
     filas = ws_datos.get_all_records()
-    reglas_activas = [f for f in filas if str(f.get("Activo", "")).strip().upper() == "SI"]
+    reglas_activas = []
+
+    for f in filas:
+        activo = obtener_valor_clave_flexible(f, "Activo").upper()
+        if activo == "SI":
+            regla_norm = {
+                "Remitente": obtener_valor_clave_flexible(f, "Remitente"),
+                "Asunto_Contiene": obtener_valor_clave_flexible(f, "Asunto_Contiene"),
+                "Clave": obtener_valor_clave_flexible(f, "Clave"),
+                "Activo": "SI",
+                "Tiene_Adjunto": obtener_valor_clave_flexible(f, "Tiene_Adjunto").upper() or "NO",
+                "Regex_Consumo": obtener_valor_clave_flexible(f, "Regex_Consumo"),
+                "Regex_Cierre": obtener_valor_clave_flexible(f, "Regex_Cierre"),
+                "Regex_Vencimiento": obtener_valor_clave_flexible(f, "Regex_Vencimiento"),
+                "Regex_Monto": obtener_valor_clave_flexible(f, "Regex_Monto"),
+            }
+            reglas_activas.append(regla_norm)
+
     print(f"[DEBUG] Reglas activas encontradas: {len(reglas_activas)}")
     for i, r in enumerate(reglas_activas, 1):
-        print(f"  Regla {i}: Remitente={r.get('Remitente')}, Asunto={r.get('Asunto_Contiene', '')}")
+        print(f"  Regla {i}: Remitente={r.get('Remitente')}, Asunto={r.get('Asunto_Contiene', '')}, Tiene_Adjunto={r.get('Tiene_Adjunto')}")
     return reglas_activas
 
 
@@ -213,7 +237,6 @@ def formatear_fecha_resumen(fecha_rfc2822):
 
 
 def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
-    """Guarda en Consolidado con USER_ENTERED para no anteponer apóstrofe '."""
     ws.append_row([
         formatear_fecha_resumen(fecha_rfc),
         remitente,
@@ -230,7 +253,7 @@ def marcar_procesado(mensaje_id, label_id):
     ).execute()
 
 
-# ---------- Helper Funciones y Parsing ----------
+# ---------- Parsing y Extracción con Validaciones ----------
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
@@ -256,16 +279,27 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
-    mes_str = str(mes_or_num).strip().upper()
-    if mes_str in MESES_ESPANOL:
-        mes_num = MESES_ESPANOL[mes_str]
-    elif mes_str.isdigit():
-        mes_num = mes_str.zfill(2)
-    else:
-        mes_num = "01"
-        
-    anio_full = "20" + anio_str if len(anio_str) == 2 else anio_str
-    return f"{dia_str.zfill(2)}/{mes_num}/{anio_full}"
+    """Valida numéricamente día (1-31) y mes (1-12) para descartar números de documento/contrato."""
+    try:
+        dia_num = int(dia_str)
+        if not (1 <= dia_num <= 31):
+            return None
+
+        mes_str = str(mes_or_num).strip().upper()
+        if mes_str in MESES_ESPANOL:
+            mes_num = int(MESES_ESPANOL[mes_str])
+        elif mes_str.isdigit():
+            mes_num = int(mes_str)
+        else:
+            return None
+
+        if not (1 <= mes_num <= 12):
+            return None
+
+        anio_full = "20" + anio_str if len(anio_str) == 2 else anio_str
+        return f"{str(dia_num).zfill(2)}/{str(mes_num).zfill(2)}/{anio_full}"
+    except Exception:
+        return None
 
 
 def es_pago_realizado(detalle_texto):
@@ -284,7 +318,7 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Extrae datos usando ÚNICAMENTE las palabras clave indicadas en la hoja Datos."""
+    """Extrae Fecha Cierre, Fecha Vencimiento y Monto Total con estricta validación de calendario."""
     texto_unido = texto_pdf + "\n" + texto_mail
     
     fecha_cierre = ""
@@ -293,27 +327,31 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
 
     PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
 
-    # 1. Extracción de Fecha Cierre con la palabra clave exacta de la hoja Datos
+    # 1. Extracción de Fecha Cierre
     kw_cierre_target = kw_cierre.strip() if kw_cierre else "CIERRE ACTUAL"
-    m_c = re.search(re.escape(kw_cierre_target) + r'[\s\S]{0,40}?[:\s]+' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-    if m_c:
-        fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
+    for m in re.finditer(re.escape(kw_cierre_target) + r'[\s\S]{0,60}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
+        f_cand = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
+        if f_cand:
+            fecha_cierre = f_cand
+            break
 
-    # 2. Extracción de Fecha Vencimiento con la palabra clave exacta de la hoja Datos
+    # 2. Extracción de Fecha Vencimiento
     kw_vto_target = kw_vto.strip() if kw_vto else "VENCIMIENTO"
-    m_v = re.search(re.escape(kw_vto_target) + r'[\s\S]{0,60}?(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})', texto_unido, re.IGNORECASE)
-    if m_v:
-        fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
+    for m in re.finditer(re.escape(kw_vto_target) + r'[\s\S]{0,80}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
+        f_cand = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
+        if f_cand:
+            fecha_vencimiento = f_cand
+            break
 
-    # Fallbacks de respaldo en caso de celda vacía en Datos
+    # Fallbacks de respaldo
     if not fecha_cierre:
         fecha_cierre = fecha_mail_fmt
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 3. Extracción del Monto Total con la palabra clave exacta de la hoja Datos
-    kw_monto_target = kw_monto.strip() if kw_monto else "SALDO $"
-    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,60}?([\d.]*,\d{2})', texto_unido, re.IGNORECASE)
+    # 3. Extracción del Monto Total
+    kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
+    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,80}?[\$]?\s*([\d.]*,\d{1,2})', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
             monto_total = normalizar_monto(m_monto.group(1))
@@ -368,7 +406,6 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
 
 
 def guardar_consumos_sheet(ws_consumos, consumos, remitente):
-    """Guarda consumos usando USER_ENTERED para eliminar el apóstrofe '."""
     if not consumos:
         return
     filas = [
@@ -414,9 +451,12 @@ def revisar_mails():
         remitente = regla["Remitente"]
         asunto_contiene = regla.get("Asunto_Contiene", "")
         clave = str(regla.get("Clave", "")).strip()
+        tiene_adjunto = str(regla.get("Tiene_Adjunto", "NO")).strip().upper() == "SI"
+        
         print(f"[DEBUG] Remitente: {remitente}")
         print(f"[DEBUG] Asunto contiene: '{asunto_contiene}'")
-        print(f"[DEBUG] Clave PDF: {'[configurada]' if clave else '[sin clave]'}")
+        print(f"[DEBUG] Tiene Adjunto: {'SI' if tiene_adjunto else 'NO'}")
+
         nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
         for m in nuevos:
@@ -426,11 +466,12 @@ def revisar_mails():
             monto_total = 0.0
             fecha_vencimiento = ""
 
-            if clave:
+            # CASO A: Regla con adjunto PDF (ej. BNA Visa)
+            if tiene_adjunto:
                 nombre_archivo, pdf_bytes = buscar_adjunto_pdf(m["id"])
                 if pdf_bytes:
                     try:
-                        pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave)
+                        pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
                         link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
                         
                         consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
@@ -442,8 +483,8 @@ def revisar_mails():
                     except pikepdf.PasswordError:
                         print("[ERROR] Clave de PDF incorrecta")
 
-            # Si no vino de un PDF con consumos, intentar extraer monto y vto del mail directamente
-            if not fecha_vencimiento or monto_total == 0.0:
+            # CASO B: Regla sin adjunto (ej. EPEC) o fallback de cuerpo de mail
+            if not tiene_adjunto or not fecha_vencimiento or monto_total == 0.0:
                 kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
                 kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
                 kw_monto = str(regla.get("Regex_Monto", "")).strip()
