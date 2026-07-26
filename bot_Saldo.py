@@ -157,7 +157,8 @@ def limpiar_html(texto_html):
     return texto.strip()
 
 
-def extraer_texto(mensaje_id):
+def extraer_texto_y_raw(mensaje_id):
+    """Extrae asunto, fecha, texto plano y el HTML crudo del correo."""
     msg = gmail_service.users().messages().get(userId="me", id=mensaje_id, format="full").execute()
     headers = msg["payload"]["headers"]
     asunto = next((h["value"] for h in headers if h["name"] == "Subject"), "(sin asunto)")
@@ -175,11 +176,10 @@ def extraer_texto(mensaje_id):
                     return texto
         return ""
 
-    cuerpo = obtener_body(msg["payload"], "text/plain")
-    if not cuerpo:
-        cuerpo = limpiar_html(obtener_body(msg["payload"], "text/html"))
+    cuerpo_raw = obtener_body(msg["payload"], "text/html") or obtener_body(msg["payload"], "text/plain")
+    cuerpo_texto = limpiar_html(cuerpo_raw)
 
-    return asunto, fecha, cuerpo
+    return asunto, fecha, cuerpo_texto, cuerpo_raw
 
 
 def buscar_adjunto_pdf(mensaje_id):
@@ -206,6 +206,22 @@ def buscar_adjunto_pdf(mensaje_id):
         userId="me", messageId=mensaje_id, id=attachment_id
     ).execute()
     return filename, base64.urlsafe_b64decode(adjunto["data"])
+
+
+def descargar_pdf_desde_link(cuerpo_raw):
+    """Extrae enlaces tipo EPEC (api/reportes/...) del HTML y descarga el PDF en vivo."""
+    m = re.search(r'href=["\'](https?://[^\s"\']*(?:api/reportes|descargar|factura|download)[^\s"\']*)["\']', cuerpo_raw, re.IGNORECASE)
+    if m:
+        url_descarga = m.group(1)
+        print(f"[DEBUG] Enlace de descarga encontrado: {url_descarga[:70]}...")
+        try:
+            resp = requests.get(url_descarga, timeout=15)
+            if resp.status_code == 200 and len(resp.content) > 100:
+                print("[DEBUG] ✅ PDF descargado exitosamente desde enlace HTML.")
+                return "Factura_Digital.pdf", resp.content
+        except Exception as e:
+            print(f"[DEBUG] Error al descargar PDF desde enlace: {str(e)}")
+    return None, None
 
 
 def quitar_clave_pdf(pdf_bytes, clave):
@@ -265,7 +281,7 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
-    """Soporta montos con coma (14439,4), punto (17161.6) y estilo argentino (331.244,18)."""
+    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -285,7 +301,7 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
-    """Valida numéricamente día (1-31) y mes (1-12) para descartar números de documento/contrato."""
+    """Valida numéricamente día (1-31) y mes (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -325,7 +341,6 @@ def extraer_cuotas(detalle_texto):
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
     """Extrae datos filtrando líneas de contrato y con soporte para montos con punto o coma."""
-    # Eliminar líneas que contengan 'Contrato:' para no leer datos irrelevantes del pie
     lineas_limpias = [l for l in (texto_pdf + "\n" + texto_mail).split("\n") if "CONTRATO:" not in l.upper()]
     texto_unido = "\n".join(lineas_limpias)
     
@@ -357,7 +372,7 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 3. Extracción del Monto Total (acepta punto o coma)
+    # 3. Extracción del Monto Total
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
     m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,80}?[\$]?\s*([\d.]+(?:[.,]\d{1,2})?)', texto_unido, re.IGNORECASE)
     if m_monto:
@@ -468,30 +483,36 @@ def revisar_mails():
         nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
         for m in nuevos:
-            asunto, fecha, cuerpo_texto = extraer_texto(m["id"])
+            asunto, fecha, cuerpo_texto, cuerpo_raw = extraer_texto_y_raw(m["id"])
             link_drive = ""
             fecha_mail_fmt = formatear_fecha_resumen(fecha)
             monto_total = 0.0
             fecha_vencimiento = ""
 
-            # CASO A: Regla con adjunto PDF (ej. BNA Visa)
+            # CASO A: Regla configurada con Tiene_Adjunto = SI
             if tiene_adjunto:
+                # 1. Intentar adjunto físico tradicional
                 nombre_archivo, pdf_bytes = buscar_adjunto_pdf(m["id"])
+                
+                # 2. Si no hay adjunto físico, buscar enlace de descarga en el cuerpo HTML (ej. EPEC)
+                if not pdf_bytes:
+                    nombre_archivo, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
+
                 if pdf_bytes:
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
-                        link_drive = subir_a_drive(nombre_archivo, pdf_sin_clave)
+                        link_drive = subir_a_drive(nombre_archivo or "Factura.pdf", pdf_sin_clave)
                         
                         consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
                             pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
                         )
                         
-                        if ws_consumos is not None:
+                        if ws_consumos is not None and consumos:
                             guardar_consumos_sheet(ws_consumos, consumos, remitente)
                     except pikepdf.PasswordError:
                         print("[ERROR] Clave de PDF incorrecta")
 
-            # CASO B: Regla sin adjunto (ej. EPEC) o fallback de cuerpo de mail
+            # CASO B: Regla sin adjunto (Tiene_Adjunto = NO) o fallback de cuerpo de correo
             if not tiene_adjunto or not fecha_vencimiento or monto_total == 0.0:
                 kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
                 kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
