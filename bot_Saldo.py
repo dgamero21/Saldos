@@ -41,6 +41,9 @@ LABEL_PROCESADO = "Procesado-Resumen"
 from zoneinfo import ZoneInfo
 
 def debe_ejecutar_ahora():
+    if os.environ.get("FORZAR_EJECUCION", "false").lower() == "true":
+        return True
+
     sh = gc.open_by_key(SHEET_ID)
     ws_config = sh.worksheet("Config")
     filas = ws_config.get_all_records()
