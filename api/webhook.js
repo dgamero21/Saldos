@@ -1,61 +1,54 @@
-const https = require('https');
-
-module.exports = async (req, res) => {
-  // Solo procesar peticiones POST (que son las que envía Telegram)
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).end('Method Not Allowed');
+    return res.status(405).json({ error: 'Método no permitido. Utilizar POST.' });
   }
 
-  // Leer el Personal Access Token de GitHub desde las variables de entorno de Vercel
-  const pat = process.env.GH_PAT;
-  if (!pat) {
-    return res.status(500).send('Error: GH_PAT environment variable is not configured in Vercel.');
-  }
+  try {
+    const update = req.body;
 
-  const payload = JSON.stringify({
-    event_type: 'telegram_trigger'
-  });
-
-  const options = {
-    hostname: 'api.github.com',
-    port: 443,
-    path: '/repos/dgamero21/Saldos/dispatches',
-    method: 'POST',
-    headers: {
-      'Accept': 'application/vnd.github+json',
-      'Authorization': `Bearer ${pat}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'Vercel-Serverless-Bridge',
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload)
+    if (!update || !update.update_id) {
+      return res.status(400).json({ error: 'Estructura de payload de Telegram no válida.' });
     }
-  };
 
-  return new Promise((resolve) => {
-    const postReq = https.request(options, (postRes) => {
-      let data = '';
-      postRes.on('data', (chunk) => {
-        data += chunk;
-      });
+    const githubOwner = "dgamero21";
+    const githubRepo = "Saldos";
+    const githubPat = process.env.GH_PAT; // Asegúrese de que esta variable esté configurada en Vercel
 
-      postRes.on('end', () => {
-        if (postRes.statusCode >= 200 && postRes.statusCode < 300) {
-          res.status(200).send('OK: GitHub Action triggered successfully.');
-          resolve();
-        } else {
-          res.status(postRes.statusCode).send(`Error from GitHub: ${data}`);
-          resolve();
+    if (!githubPat) {
+      console.error("[ERROR] No se detectó la variable GH_PAT en el entorno de Vercel.");
+      return res.status(500).json({ error: 'Falta configurar la credencial de GitHub en el servidor.' });
+    }
+
+    // Llamada a la API de GitHub para disparar el flujo por evento con carga útil
+    const githubUrl = `https://api.github.com/repos/${githubOwner}/${githubRepo}/dispatches`;
+    
+    const response = await fetch(githubUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${githubPat}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Vercel-Webhook-Bridge'
+      },
+      body: JSON.stringify({
+        event_type: 'telegram_trigger',
+        client_payload: {
+          update: update // Pasamos todo el objeto recibido de Telegram
         }
-      });
+      })
     });
 
-    postReq.on('error', (err) => {
-      res.status(500).send(`Network Error: ${err.message}`);
-      resolve();
-    });
+    if (response.ok) {
+      console.log(`[OK] Evento enviado correctamente a GitHub para el update_id: ${update.update_id}`);
+      return res.status(200).json({ message: 'Evento de Telegram propagado a GitHub con éxito.' });
+    } else {
+      const errorText = await response.text();
+      console.error(`[ERROR] GitHub API respondió con estado ${response.status}: ${errorText}`);
+      return res.status(response.status).json({ error: 'Error al reportar evento a la API de GitHub.', details: errorText });
+    }
 
-    postReq.write(payload);
-    postReq.end();
-  });
-};
+  } catch (error) {
+    console.error('[ERROR] Ocurrió un fallo en el puente de ejecución:', error);
+    return res.status(500).json({ error: 'Fallo interno del servidor en el puente.', details: error.message });
+  }
+}
