@@ -5,6 +5,7 @@ import base64
 import email
 import email.header
 import email.utils
+import html
 from datetime import datetime
 import traceback
 from zoneinfo import ZoneInfo
@@ -17,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Parser de Correo Universal...")
+print("[INICIO] Inicializando bot_Saldo.py...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -206,22 +207,28 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Buscador universal de enlaces de descarga de PDF/Facturas en el cuerpo HTML decodificado."""
+    """Buscador universal de enlaces de descarga de PDF. Usa User-Agent para evitar bloqueos de servidores."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     
-    # Filtrar enlaces con palabras clave
+    # Filtrar enlaces candidatos a descarga
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
         candidatos = urls
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
     for url in candidatos:
+        url_limpia = html.unescape(url)  # Limpiar entidades HTML como &amp;
         try:
-            resp = requests.get(url, timeout=12, stream=True)
+            resp = requests.get(url_limpia, headers=headers, timeout=12, stream=True)
             content_type = resp.headers.get("Content-Type", "").lower()
             if "application/pdf" in content_type or resp.content[:4] == b"%PDF":
-                print(f"[DEBUG] ✅ PDF descargado exitosamente desde enlace: {url[:60]}...")
+                print(f"[DEBUG] ✅ PDF descargado exitosamente desde enlace: {url_limpia[:60]}...")
                 return "Factura_Digital.pdf", resp.content
-        except Exception:
+        except Exception as e:
+            print(f"[DEBUG] Error al intentar descargar desde URL candidato: {str(e)}")
             continue
 
     return None, None
@@ -272,7 +279,7 @@ def marcar_procesado(mensaje_id, label_id):
     ).execute()
 
 
-# ---------- Parsing y Normalización Universales ----------
+# ---------- Normalización Numérica y de Fechas ----------
 
 REGEX_CONSUMO_DEFAULT = r'^(\d{2}\.\d{2}\.\d{2})\s+(?:(\d+)\s+)?(.+?)\s+(-?\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})\s*$'
 
@@ -284,6 +291,7 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
+    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -303,6 +311,7 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
+    """Validación estricta de calendario (1-31) y (1-12) para filtrar documentos o CUITs."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -341,8 +350,9 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Buscador universal de Fechas e Importes con validaciones y filtro de contrato."""
-    lineas_limpias = [l for l in (texto_pdf + "\n" + texto_mail).split("\n") if "CONTRATO:" not in l.upper()]
+    """Buscador genérico de Fechas e Importes. Filtra líneas de contrato de forma estricta."""
+    # Eliminar líneas que contengan 'CONTRATO' para evitar falsos positivos
+    lineas_limpias = [l for l in (texto_pdf + "\n" + texto_mail).split("\n") if "CONTRATO" not in l.upper()]
     texto_unido = "\n".join(lineas_limpias)
     
     fecha_cierre = ""
@@ -373,9 +383,8 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 3. Extracción del Monto Total
+    # 3. Extracción del Monto Total (Búsqueda estricta de formato de moneda decimal)
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
-    # Busca importes con formato numérico real con punto o coma decimal
     m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,100}?\b(\d{1,3}(?:\.\d{3})+,\d{2}|\d+(?:[.,]\d{1,2}))\b', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
@@ -493,15 +502,22 @@ def revisar_mails():
 
             # CASO A: Regla configurada con Tiene_Adjunto = SI
             if tiene_adjunto:
-                # Si no vino adjunto nativo en el MIME, probar descargando desde enlace HTML (EPEC)
+                # 1. Intentar adjunto físico tradicional en el mail
                 if not pdf_bytes:
                     pdf_filename, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
 
                 if pdf_bytes:
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
-                        link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
                         
+                        # Solo subir a Google Drive si NO es EPEC (para mantener a EPEC puramente temporal)
+                        if "epec.com.ar" not in remitente.lower():
+                            link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
+                            print(f"[DEBUG] Archivo subido exitosamente a Google Drive: {link_drive}")
+                        else:
+                            print("[DEBUG] Remitente es EPEC, se procesa temporalmente en memoria sin subir a Google Drive.")
+                            link_drive = ""
+
                         consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
                             pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
                         )
@@ -511,17 +527,14 @@ def revisar_mails():
                     except pikepdf.PasswordError:
                         print("[ERROR] Clave de PDF incorrecta")
 
-            # CASO B: Si no se procesó PDF o si dio $0, intentar extracción desde el cuerpo decodificado
-            if not fecha_vencimiento or monto_total == 0.0:
-                kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
-                kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
-                kw_monto = str(regla.get("Regex_Monto", "")).strip()
-                _, f_vto_mail, m_total_mail = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
-                
-                if not fecha_vencimiento:
-                    fecha_vencimiento = f_vto_mail
-                if monto_total == 0.0:
-                    monto_total = m_total_mail
+            # CASO B: Si Tiene_Adjunto es NO o si la lectura del PDF falló / no encontró datos
+            if not tiene_adjunto or not fecha_vencimiento or monto_total == 0.0:
+                # Solo ejecutamos el fallback si Tiene_Adjunto es NO para evitar mezclas con BNA/PDFs
+                if not tiene_adjunto:
+                    kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
+                    kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
+                    kw_monto = str(regla.get("Regex_Monto", "")).strip()
+                    _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
 
             guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
             
