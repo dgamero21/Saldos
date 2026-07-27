@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import json
 import base64
 import email
 import email.header
@@ -18,7 +19,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Inteligencia Conversacional...")
+print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -47,7 +48,7 @@ try:
     gmail_service = build("gmail", "v1", credentials=creds)
     print("[DEBUG] Gmail service inicializado")
     drive_service = build("drive", "v3", credentials=creds)
-    print("[DEBUG] Drive service inicializado")
+    print("[DEBUG] Drive service initialized")
     gc = gspread.authorize(creds)
     print("[DEBUG] Gspread client inicializado")
     
@@ -185,7 +186,6 @@ def extraer_datos_mensaje_mime(mensaje_id):
         content_type = part.get_content_type()
         disposition = str(part.get("Content-Disposition", ""))
         
-        # Detectar adjunto PDF
         if "attachment" in disposition and part.get_filename() and part.get_filename().lower().endswith(".pdf"):
             pdf_filename = part.get_filename()
             pdf_bytes = part.get_payload(decode=True)
@@ -193,7 +193,6 @@ def extraer_datos_mensaje_mime(mensaje_id):
             pdf_filename = part.get_filename()
             pdf_bytes = part.get_payload(decode=True)
             
-        # Extraer cuerpos de texto
         if content_type == "text/html":
             cuerpo_html = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="ignore")
         elif content_type == "text/plain":
@@ -206,7 +205,6 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -287,7 +285,6 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
-    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -307,7 +304,6 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
-    """Validación estricta de calendario (1-31) y (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -336,7 +332,6 @@ def es_pago_realizado(detalle_texto):
 
 
 def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
-    """Traductor automático de Plan Zeta a 1/3 y cuotas estándar."""
     if cuota_texto_detectado:
         c_txt = str(cuota_texto_detectado).strip().upper()
         if c_txt == "ZETA":
@@ -347,7 +342,6 @@ def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
         if c_txt.isdigit():
             return detalle_texto.strip(), int(c_txt), int(c_txt)
 
-    # Fallback/Default para BNA Visa
     m = re.search(r'\s+C\.?\s*(\d+)\s*/\s*(\d+)', detalle_texto, re.IGNORECASE)
     if m:
         cuota_act = int(m.group(1))
@@ -358,7 +352,6 @@ def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
 
 
 def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
-    """Evita duplicados: valida si ya existe el mismo remitente, monto y vencimiento en Consolidado."""
     try:
         filas = ws_consolidado.get_all_values()
         if len(filas) <= 1:
@@ -368,7 +361,6 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
         f_vto_cand = str(fecha_vencimiento).strip()
         r_cand = str(remitente).strip().lower()
         
-        # Fila: [Fecha Mail, Remitente, Asunto, Monto Total, Fecha Vencimiento, Link Drive]
         for f in filas[1:]:
             if len(f) >= 5:
                 try:
@@ -386,14 +378,9 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
 
 
 def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
-    """Algoritmo de cajones/palabras (Tokenización) con coincidencia de secuencia de palabras (multi-cajón)."""
-    # Eliminar quirúrgicamente el bloque de contrato para evitar interferencias
     texto_unido_limpio = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_unido, flags=re.IGNORECASE)
-    
-    # Separar texto del correo por espacios (cajones)
     palabras = [p.strip() for p in texto_unido_limpio.split(" ") if p.strip()]
     
-    # Separar la palabra clave de Datos en cajones individuales (para soportar frases como "Total a pagar")
     kw_palabras = [k.strip().lower() for k in kw_target.split(" ") if k.strip()]
     if not kw_palabras:
         return None
@@ -401,24 +388,21 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
     idx_fin_kw = -1
     len_kw = len(kw_palabras)
     
-    # Deslizar ventana para encontrar la secuencia exacta de cajones de la palabra clave
     for i in range(len(palabras) - len_kw + 1):
         coincide = True
         for j in range(len_kw):
             p_mail = palabras[i + j].rstrip(",:;").lower()
             p_kw = kw_palabras[j]
-            # Coincidencia parcial o exacta
             if p_mail != p_kw and p_kw not in p_mail:
                 coincide = False
                 break
         if coincide:
-            idx_fin_kw = i + len_kw - 1  # Guardamos el índice del último cajón coincidente
+            idx_fin_kw = i + len_kw - 1
             break
             
     if idx_fin_kw == -1:
         return None
 
-    # Escanear los cajones inmediatamente posteriores al bloque de la palabra clave (hasta 20 cajones)
     for idx, p_cand in enumerate(palabras[idx_fin_kw + 1 : idx_fin_kw + 20], start=idx_fin_kw + 1):
         p_cand_clean = p_cand.rstrip(",:;")
         
@@ -429,20 +413,13 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
                 if f_val:
                     return f_val
         else:
-            # --- Regla de Coherencia de Dinero (Evita confundirse con números de cuenta o documento) ---
             monto_str = p_cand_clean.replace("$", "").strip()
-            
-            # Verificamos si cumple con el formato básico de número entero o decimal
             if re.match(r'^\d{1,3}(?:\.\d{3})+,\d{2}$', monto_str) or re.match(r'^\d+(?:[.,]\d{1,2})?$', monto_str):
                 try:
                     val = normalizar_monto(monto_str)
-                    
-                    # Filtro 1: No debe ser un número gigante de documento, medidor o CUIT
                     if val >= 10000000.0:
                         continue
                     
-                    # Filtro 2: Si es un entero puro sin decimales (ej: 0006):
-                    # Exigimos obligatoriamente que contenga "$" o que el cajón anterior en la lista sea "$"
                     tiene_decimales = ("," in monto_str) or ("." in monto_str)
                     tiene_signo_pesos = ("$" in p_cand) or (idx > 0 and palabras[idx - 1] == "$")
                     
@@ -452,6 +429,24 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
                     return val
                 except Exception:
                     continue
+    return None
+
+
+def identificar_regla_por_pdf(texto_pdf, reglas):
+    for r in reglas:
+        remitente = r["Remitente"].lower()
+        asunto = r.get("Asunto_Contiene", "").lower()
+        
+        # Heurística simple de identificación de contenido
+        if "bna" in remitente or "visa" in asunto or "mastercard" in asunto:
+            if "banco de la nacion" in texto_pdf.lower() or "bna" in texto_pdf.lower():
+                return r
+        if "epec" in remitente or "epec" in asunto:
+            if "epec" in texto_pdf.lower() or "provincia de cordoba" in texto_pdf.lower():
+                return r
+        if "naranja" in remitente or "naranja" in asunto:
+            if "naranja" in texto_pdf.lower():
+                return r
     return None
 
 
@@ -510,15 +505,13 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
         for linea in texto_completo_pdf.split("\n"):
             m = patron.match(linea.strip())
             if m:
-                # --- Identificación Dinámica de Columnas (BNA vs Naranja) ---
                 grupos = m.groups()
                 if len(grupos) == 6:
-                    # Formato Naranja con Tarjeta: fecha, tarjeta, comprobante, detalle, cuota, pesos
+                    # Formato Naranja con Tarjeta
                     fecha, tarjeta, comprobante, detalle, cuota_detectada, pesos = grupos
                     detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
                     
                     pesos_val = normalizar_monto(pesos)
-                    # Regla Matemática Plan Zeta: Se divide por 3
                     if cuota_detectada.strip().upper() == "ZETA":
                         pesos_val = round(pesos_val / 3.0, 2)
                         
@@ -527,31 +520,28 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                 elif len(grupos) == 5:
                     g4 = str(grupos[3]).strip()
                     if g4.upper() == "ZETA" or "/" in g4 or (g4.isdigit() and len(g4) == 2 and int(g4) <= 36):
-                        # Formato Naranja sin Tarjeta: fecha, comprobante, detalle, cuota, pesos
+                        # Formato Naranja sin Tarjeta
                         fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
                         
                         pesos_val = normalizar_monto(pesos)
-                        # Regla Matemática Plan Zeta: Se divide por 3
                         if cuota_detectada.strip().upper() == "ZETA":
                             pesos_val = round(pesos_val / 3.0, 2)
                             
                         dolar_val = 0.0
                         detalle_final = detalle_limpio
                     else:
-                        # Formato BNA Visa: fecha, comprobante, detalle, pesos, dolar
+                        # Formato BNA Visa
                         fecha, comprobante, detalle, pesos, dolar = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
                         pesos_val = normalizar_monto(pesos)
                         dolar_val = normalizar_monto(dolar)
                         detalle_final = detalle_limpio
                 elif len(grupos) == 4:
-                    # Formato alternativo sin dólares (como Naranja): fecha, comprobante, detalle, cuota, pesos
                     fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                     detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
                     
                     pesos_val = normalizar_monto(pesos)
-                    # Regla Matemática Plan Zeta: Se divide por 3
                     if cuota_detectada.strip().upper() == "ZETA":
                         pesos_val = round(pesos_val / 3.0, 2)
                         
@@ -596,27 +586,23 @@ def guardar_consumos_sheet(ws_consumos, consumos, remitente):
     ws_consumos.append_rows(filas, value_input_option="USER_ENTERED")
 
 
-# ---------- Procesamiento de Telegram ( getUpdates ) ----------
+# ---------- Procesamiento de Telegram ( Webhook Payload ) ----------
 
 def leer_config_completo(ws_config):
-    """Lee toda la hoja Config de forma segura y devuelve la memoria conversacional."""
     valores = ws_config.get_all_values()
     last_update_id = 0
     state = ""
     tipos = []
     
     if len(valores) > 1:
-        # Columna B: Last_Telegram_Update_ID
         if len(valores[1]) > 1 and valores[1][1]:
             try:
                 last_update_id = int(valores[1][1])
             except Exception:
                 pass
-        # Columna C: Telegram_State
         if len(valores[1]) > 2:
             state = str(valores[1][2]).strip()
             
-    # Columna E: Tipo (Categorías de gastos manuales), desde la fila 2 hacia abajo
     for fila in valores[1:]:
         if len(fila) > 4 and fila[4].strip():
             tipos.append(fila[4].strip())
@@ -626,17 +612,14 @@ def leer_config_completo(ws_config):
 
 def guardar_estado_telegram(ws_config, estado):
     try:
-        # Guarda el estado de la conversación en la celda C2 (Telegram_State)
         ws_config.update_cell(2, 3, estado)
     except Exception as e:
         print(f"[DEBUG] Error al guardar estado en Config: {str(e)}")
 
 
 def parsear_monto_manual(texto):
-    """Detecta números o expresiones como 100mil o $5000 en el mensaje de texto."""
     texto_limpio = str(texto).strip().lower().replace("$", "").replace(" ", "")
     
-    # Soporte para abreviatura "mil" (ej: 100mil -> 100000)
     factor = 1.0
     if "mil" in texto_limpio:
         factor = 1000.0
@@ -653,7 +636,6 @@ def parsear_monto_manual(texto):
 
 
 def enviar_teclado_categorias(chat_id, monto, tipos):
-    """Envía un teclado interactivo por Telegram con tus categorías configuradas."""
     keyboard = []
     fila = []
     for t in tipos:
@@ -676,27 +658,28 @@ def enviar_teclado_categorias(chat_id, monto, tipos):
 
 
 def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
-    """Llamada a getUpdates para procesar archivos PDF o gastos manuales por botones."""
-    print("[DEBUG] Buscando mensajes nuevos en Telegram...")
-    last_update_id, state, tipos = leer_config_completo(ws_config)
-    offset = last_update_id + 1 if last_update_id > 0 else 0
+    print("[DEBUG] Verificando payload de mensaje en las variables de entorno...")
     
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}"
+    # Intentamos obtener el payload inyectado por GitHub Actions desde Vercel
+    payload_str = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
+    
+    if not payload_str:
+        print("[DEBUG] No se detectó payload de Telegram. Se omite el procesamiento de Telegram (vía cron/Gmail).")
+        return
+
     try:
-        updates = requests.get(url, timeout=15).json().get("result", [])
+        update = json.loads(payload_str)
+        updates = [update]
+        print("[DEBUG] Payload decodificado con éxito. Procesando update del Webhook.")
     except Exception as e:
-        print(f"[ERROR] No se pudo obtener actualizaciones de Telegram: {str(e)}")
+        print(f"[ERROR] No se pudo decodificar el payload de Telegram: {str(e)}")
         return
 
-    if not updates:
-        print("[DEBUG] No hay mensajes nuevos en Telegram.")
-        return
+    last_update_id, state, tipos = leer_config_completo(ws_config)
 
-    print(f"[DEBUG] Se encontraron {len(updates)} actualizaciones en Telegram.")
     for update in updates:
-        update_id = update["update_id"]
+        update_id = update.get("update_id")
         
-        # CASO 1: Callback Query (Clic en botón de categoría)
         callback_query = update.get("callback_query")
         if callback_query:
             chat_id = str(callback_query["message"]["chat"]["id"])
@@ -704,7 +687,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 data_seleccionada = callback_query["data"]
                 message_id = callback_query["message"]["message_id"]
                 
-                # Re-leer estado para obtener el monto guardado
                 _, state_actual, _ = leer_config_completo(ws_config)
                 if state_actual.startswith("ESPERANDO_TIPO|"):
                     try:
@@ -712,7 +694,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                         monto_val = float(monto_str)
                         fecha_hoy = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                         
-                        # Guardar el gasto manual directamente en la hoja Consumos
                         if ws_consumos is not None:
                             ws_consumos.append_row([
                                 fecha_hoy,
@@ -727,7 +708,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                                 "Manual Telegram"
                             ], value_input_option="USER_ENTERED")
                             
-                        # Editar el mensaje de Telegram para quitar los botones y confirmar
                         url_edit = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
                         payload_edit = {
                             "chat_id": chat_id,
@@ -741,11 +721,10 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                         print(f"[ERROR] Error al procesar selección de botón: {str(e)}")
                         enviar_telegram(f"❌ Error al registrar gasto manual: {str(e)}")
                         
-            # Marcar mensaje como procesado
-            ws_config.update_cell(2, 2, update_id)
+            if update_id:
+                ws_config.update_cell(2, 2, update_id)
             continue
 
-        # CASO 2: Mensaje común de texto o archivo
         message = update.get("message")
         if not message:
             continue
@@ -754,7 +733,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
         if chat_id != TELEGRAM_CHAT_ID:
             continue
 
-        # A. Procesamiento de Texto (Gastos Manuales)
         texto = message.get("text")
         if texto:
             monto_detectado = parsear_monto_manual(texto)
@@ -762,10 +740,10 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 print(f"[DEBUG] Gasto manual detectado por texto: {monto_detectado}")
                 guardar_estado_telegram(ws_config, f"ESPERANDO_TIPO|{monto_detectado}")
                 enviar_teclado_categorias(chat_id, monto_detectado, tipos)
-                ws_config.update_cell(2, 2, update_id)
+                if update_id:
+                    ws_config.update_cell(2, 2, update_id)
                 continue
 
-        # B. Procesamiento de Documento (Resúmenes en PDF)
         document = message.get("document")
         if document and document.get("mime_type") == "application/pdf":
             file_id = document["file_id"]
@@ -788,7 +766,8 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 if not regla:
                     print("[ERROR] No se pudo identificar la empresa/regla de este PDF.")
                     enviar_telegram("❌ Error: No logré identificar a qué empresa pertenece esta factura. Verifica que la regla esté activa en la hoja Datos.")
-                    ws_config.update_cell(2, 2, update_id)
+                    if update_id:
+                        ws_config.update_cell(2, 2, update_id)
                     continue
                 
                 remitente = regla["Remitente"]
@@ -812,7 +791,8 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
                     print(f"[DEBUG] Registro duplicado detectado desde Telegram para {remitente} (${monto_total}). Se omite.")
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
-                    ws_config.update_cell(2, 2, update_id)
+                    if update_id:
+                        ws_config.update_cell(2, 2, update_id)
                     continue
 
                 if ws_consumos is not None and es_tarjeta and consumos:
@@ -829,8 +809,8 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 print(f"[ERROR] Error al procesar PDF de Telegram: {str(e)}")
                 enviar_telegram(f"❌ Ocurrió un error al procesar tu archivo '{file_name}': {str(e)}")
                 
-        # Confirmar procesamiento
-        ws_config.update_cell(2, 2, update_id)
+        if update_id:
+            ws_config.update_cell(2, 2, update_id)
 
 
 # ---------- Flujo de Trabajo Principal ----------
@@ -855,78 +835,82 @@ def revisar_mails():
         ws_consumos = None
     print("[DEBUG] Hojas abiertas correctamente.")
 
-    # 1. Procesar Gmail
-    print(f"[DEBUG] Procesando {len(reglas)} reglas de Gmail...\n")
-    for idx, regla in enumerate(reglas, 1):
-        print(f"\n--- Regla {idx} ---")
-        remitente = regla["Remitente"]
-        asunto_contiene = regla.get("Asunto_Contiene", "")
-        clave = str(regla.get("Clave", "")).strip()
-        tiene_adjunto = str(regla.get("Tiene_Adjunto", "NO")).strip().upper() == "SI"
-        es_tarjeta = str(regla.get("Es_Tarjeta_Credito", "NO")).strip().upper() == "SI"
-        
-        print(f"[DEBUG] Remitente: {remitente}")
-        print(f"[DEBUG] Asunto contiene: '{asunto_contiene}'")
-        print(f"[DEBUG] Tiene Adjunto: {'SI' if tiene_adjunto else 'NO'}")
-        print(f"[DEBUG] Es Tarjeta de Crédito: {'SI' if es_tarjeta else 'NO'}")
+    # 1. Procesar Gmail (Solo si no viene de una ejecución exclusiva de Telegram para agilizar respuesta)
+    payload_telegram = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
+    if not payload_telegram:
+        print(f"[DEBUG] Procesando {len(reglas)} reglas de Gmail...\n")
+        for idx, regla in enumerate(reglas, 1):
+            print(f"\n--- Regla {idx} ---")
+            remitente = regla["Remitente"]
+            asunto_contiene = regla.get("Asunto_Contiene", "")
+            clave = str(regla.get("Clave", "")).strip()
+            tiene_adjunto = str(regla.get("Tiene_Adjunto", "NO")).strip().upper() == "SI"
+            es_tarjeta = str(regla.get("Es_Tarjeta_Credito", "NO")).strip().upper() == "SI"
+            
+            print(f"[DEBUG] Remitente: {remitente}")
+            print(f"[DEBUG] Asunto contiene: '{asunto_contiene}'")
+            print(f"[DEBUG] Tiene Adjunto: {'SI' if tiene_adjunto else 'NO'}")
+            print(f"[DEBUG] Es Tarjeta de Crédito: {'SI' if es_tarjeta else 'NO'}")
 
-        nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
+            nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
-        for m in nuevos:
-            asunto, fecha, cuerpo_texto, cuerpo_raw, pdf_filename, pdf_bytes = extraer_datos_mensaje_mime(m["id"])
-            link_drive = ""
-            fecha_mail_fmt = formatear_fecha_resumen(fecha)
-            monto_total = 0.0
-            fecha_vencimiento = ""
+            for m in nuevos:
+                asunto, fecha, cuerpo_texto, cuerpo_raw, pdf_filename, pdf_bytes = extraer_datos_mensaje_mime(m["id"])
+                link_drive = ""
+                fecha_mail_fmt = formatear_fecha_resumen(fecha)
+                monto_total = 0.0
+                fecha_vencimiento = ""
 
-            # CASO A: Regla configurada con Tiene_Adjunto = SI
-            if tiene_adjunto:
-                if not pdf_bytes:
-                    pdf_filename, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
+                # CASO A: Regla configurada con Tiene_Adjunto = SI
+                if tiene_adjunto:
+                    if not pdf_bytes:
+                        pdf_filename, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
 
-                if pdf_bytes:
-                    try:
-                        pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
-                        
-                        if "epec.com.ar" not in remitente.lower():
-                            link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
-                            print(f"[DEBUG] Archivo subido exitosamente a Google Drive: {link_drive}")
-                        else:
-                            print("[DEBUG] Remitente es EPEC, se procesa temporalmente en memoria sin subir a Google Drive.")
-                            link_drive = ""
+                    if pdf_bytes:
+                        try:
+                            pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
+                            
+                            if "epec.com.ar" not in remitente.lower():
+                                link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
+                                print(f"[DEBUG] Archivo subido exitosamente a Google Drive: {link_drive}")
+                            else:
+                                print("[DEBUG] Remitente es EPEC, se procesa temporalmente en memoria sin subir a Google Drive.")
+                                link_drive = ""
 
-                        consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
-                            pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
-                        )
-                        
-                        if ws_consumos is not None and es_tarjeta and consumos:
-                            guardar_consumos_sheet(ws_consumos, consumos, remitente)
-                    except pikepdf.PasswordError:
-                        print("[ERROR] Clave de PDF incorrecta")
+                            consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
+                                pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
+                            )
+                            
+                            if ws_consumos is not None and es_tarjeta and consumos:
+                                guardar_consumos_sheet(ws_consumos, consumos, remitente)
+                        except pikepdf.PasswordError:
+                            print("[ERROR] Clave de PDF incorrecta")
 
-            # CASO B: Si Tiene_Adjunto es NO o si la lectura del PDF falló / no encontró datos
-            if not fecha_vencimiento or monto_total == 0.0:
-                if not tiene_adjunto:
-                    kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
-                    kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
-                    kw_monto = str(regla.get("Regex_Monto", "")).strip()
-                    _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
+                # CASO B: Si Tiene_Adjunto es NO o si la lectura del PDF falló / no encontró datos
+                if not fecha_vencimiento or monto_total == 0.0:
+                    if not tiene_adjunto:
+                        kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
+                        kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
+                        kw_monto = str(regla.get("Regex_Monto", "")).strip()
+                        _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
 
-            # --- Guardar Deduplicado ---
-            if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
-                print(f"[DEBUG] Registro duplicado detectado para {remitente} (${monto_total}). Se omite.")
+                # --- Guardar Deduplicado ---
+                if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+                    print(f"[DEBUG] Registro duplicado detectado para {remitente} (${monto_total}). Se omite.")
+                    marcar_procesado(m["id"], label_id)
+                    continue
+
+                guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
+                
+                texto_telegram = f"📩 Resumen Procesado\nDe: {remitente}\nAsunto: {asunto}\nMonto: ${monto_total:,.2f}\nVencimiento: {fecha_vencimiento}"
+                if link_drive:
+                    texto_telegram += f"\nPDF: {link_drive}"
+                enviar_telegram(texto_telegram)
+                
                 marcar_procesado(m["id"], label_id)
-                continue
-
-            guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
-            
-            texto_telegram = f"📩 Resumen Procesado\nDe: {remitente}\nAsunto: {asunto}\nMonto: ${monto_total:,.2f}\nVencimiento: {fecha_vencimiento}"
-            if link_drive:
-                texto_telegram += f"\nPDF: {link_drive}"
-            enviar_telegram(texto_telegram)
-            
-            marcar_procesado(m["id"], label_id)
-            total_procesados += 1
+                total_procesados += 1
+    else:
+        print("[DEBUG] Ejecución exclusiva de Telegram. Omitiendo revisión de Gmail para reducir tiempos de espera.")
 
     # 2. Procesar Telegram (Archivos o Gastos Manuales)
     print("\n" + "="*60)
@@ -939,11 +923,11 @@ def revisar_mails():
 if __name__ == "__main__":
     print("[MAIN] Iniciando ejecución principal...")
     try:
-        if debe_ejecutar_ahora():
+        if debe_ejecutar_ahora() or os.environ.get("TELEGRAM_UPDATE_PAYLOAD"):
             print("[MAIN] Ejecutando revisar_mails()...")
             revisar_mails()
         else:
-            print("[MAIN] Todavía no es la hora configurada en el Sheet.")
+            print("[MAIN] Todavía no es la hora configurada en el Sheet y no hay payload de Telegram.")
     except Exception as e:
         print(f"[MAIN] ERROR durante la ejecución: {str(e)}")
         import traceback as _tb
