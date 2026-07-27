@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Deduplicación y Filtro de Consumos...")
+print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -210,7 +210,7 @@ def descargar_pdf_desde_link(cuerpo_raw):
         candidatos = urls
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Scientific/537.36, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     for url in candidatos:
@@ -284,6 +284,7 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
+    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -330,7 +331,19 @@ def es_pago_realizado(detalle_texto):
     return "SU PAGO" in detalle_upper or "PAGO EN PESOS" in detalle_upper or "PAGO EN DOLARES" in detalle_upper
 
 
-def extraer_cuotas(detalle_texto):
+def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
+    """Traductor automático de Plan Zeta a 1/3 y cuotas estándar."""
+    if cuota_texto_detectado:
+        c_txt = str(cuota_texto_detectado).strip().upper()
+        if c_txt == "ZETA":
+            return detalle_texto.strip(), 1, 3
+        m = re.match(r'^(\d+)/(\d+)$', c_txt)
+        if m:
+            return detalle_texto.strip(), int(m.group(1)), int(m.group(2))
+        if c_txt.isdigit():
+            return detalle_texto.strip(), int(c_txt), int(c_txt)
+
+    # Fallback/Default para BNA Visa
     m = re.search(r'\s+C\.?\s*(\d+)\s*/\s*(\d+)', detalle_texto, re.IGNORECASE)
     if m:
         cuota_act = int(m.group(1))
@@ -341,7 +354,6 @@ def extraer_cuotas(detalle_texto):
 
 
 def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
-    """Evita duplicados: valida si ya existe el mismo remitente, monto y vencimiento en Consolidado."""
     try:
         filas = ws_consolidado.get_all_values()
         if len(filas) <= 1:
@@ -351,7 +363,6 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
         f_vto_cand = str(fecha_vencimiento).strip()
         r_cand = str(remitente).strip().lower()
         
-        # Fila: [Fecha Mail, Remitente, Asunto, Monto Total, Fecha Vencimiento, Link Drive]
         for f in filas[1:]:
             if len(f) >= 5:
                 try:
@@ -493,22 +504,39 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
         for linea in texto_completo_pdf.split("\n"):
             m = patron.match(linea.strip())
             if m:
-                fecha, comprobante, detalle, pesos, dolar = m.groups()
-                
-                if es_pago_realizado(detalle):
+                # --- Identificación Dinámica de Columnas (BNA vs Naranja) ---
+                grupos = m.groups()
+                if len(grupos) == 5:
+                    g4 = str(grupos[3]).strip()
+                    if g4.upper() == "ZETA" or "/" in g4 or (g4.isdigit() and len(g4) == 2 and int(g4) <= 36):
+                        # Formato Naranja: fecha, comprobante, detalle, cuota, pesos
+                        fecha, comprobante, detalle, cuota_detectada, pesos = grupos
+                        detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
+                        pesos_val = normalizar_monto(pesos)
+                        dolar_val = 0.0
+                    else:
+                        # Formato BNA Visa: fecha, comprobante, detalle, pesos, dolar
+                        fecha, comprobante, detalle, pesos, dolar = grupos
+                        detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
+                        pesos_val = normalizar_monto(pesos)
+                        dolar_val = normalizar_monto(dolar)
+                elif len(grupos) == 4:
+                    # Formato alternativo sin dólares (como Naranja): fecha, comprobante, detalle, cuota, pesos
+                    fecha, comprobante, detalle, cuota_detectada, pesos = grupos
+                    detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
+                    pesos_val = normalizar_monto(pesos)
+                    dolar_val = 0.0
+                else:
                     continue
-                
-                fecha_formateada = formatear_fecha_consumo(fecha)
-                detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
-                
+
                 consumos.append({
-                    "fecha": fecha_formateada,
+                    "fecha": formatear_fecha_consumo(fecha),
                     "comprobante": comprobante or "",
                     "detalle": detalle_limpio,
                     "cuota_actual": cuota_actual,
                     "cuota_total": cuota_total,
-                    "pesos": normalizar_monto(pesos),
-                    "dolar": normalizar_monto(dolar),
+                    "pesos": pesos_val,
+                    "dolar": dolar_val,
                     "fecha_cierre": fecha_cierre,
                     "fecha_vencimiento": fecha_vencimiento,
                 })
@@ -532,7 +560,7 @@ def guardar_consumos_sheet(ws_consumos, consumos, remitente):
             c["fecha_vencimiento"],
             remitente
         ]
-        for p, c in enumerate(consumos)
+        for c in consumos
     ]
     ws_consumos.append_rows(filas, value_input_option="USER_ENTERED")
 
@@ -551,26 +579,21 @@ def leer_ultimo_update_id(ws_config):
 
 def guardar_ultimo_update_id(ws_config, update_id):
     try:
-        # Guarda el último ID de mensaje procesado en la celda B2 (Last_Telegram_Update_ID)
         ws_config.update_cell(2, 2, update_id)
     except Exception as e:
         print(f"[DEBUG] Error al guardar update_id en Config: {str(e)}")
 
 
 def identificar_regla_por_pdf(texto_pdf, reglas):
-    """Machea automáticamente un PDF de Telegram con la regla correspondiente de la hoja Datos."""
     for r in reglas:
         remitente = r["Remitente"].lower()
-        # ej: "epec" de "avisos@oficinaepec.com.ar"
         dominio = remitente.split("@")[-1].split(".")[0]
-        
         if dominio in texto_pdf.lower() or r["Asunto_Contiene"].lower() in texto_pdf.lower():
             return r
     return None
 
 
 def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
-    """Llamada a getUpdates para procesar archivos PDF enviados por el usuario al bot."""
     print("[DEBUG] Buscando mensajes nuevos en Telegram...")
     last_update_id = leer_ultimo_update_id(ws_config)
     offset = last_update_id + 1 if last_update_id > 0 else 0
@@ -594,7 +617,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
             continue
             
         chat_id = str(message["chat"]["id"])
-        # Filtrar solo tus mensajes por seguridad
         if chat_id != TELEGRAM_CHAT_ID:
             continue
 
@@ -604,7 +626,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
             file_name = document.get("file_name", "Factura.pdf")
             print(f"[DEBUG] PDF recibido por Telegram: '{file_name}'")
             
-            # Descargar PDF desde los servidores de Telegram
             try:
                 get_file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}"
                 file_path = requests.get(get_file_url).json()["result"]["file_path"]
@@ -612,7 +633,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 pdf_bytes = requests.get(download_url).content
                 print("[DEBUG] PDF descargado temporalmente en memoria.")
                 
-                # Extraer texto del PDF temporal para identificar la regla
                 texto_completo_pdf = ""
                 with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                     for pagina in pdf.pages:
@@ -630,21 +650,17 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 es_tarjeta = regla.get("Es_Tarjeta_Credito", "NO") == "SI"
                 print(f"[DEBUG] PDF identificado como de: {remitente}")
                 
-                # Procesar PDF
                 pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
                 
-                # Solo subir a Google Drive si el remitente no es EPEC
                 link_drive = ""
                 if "epec.com.ar" not in remitente.lower():
                     link_drive = subir_a_drive(file_name, pdf_sin_clave)
                     
-                # Extraer datos de la factura
                 fecha_mail_fmt = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                 consumos, fecha_cierre, fecha_vencimiento, monto_total = extraer_consumos_pdf(
                     pdf_sin_clave, "", fecha_mail_fmt, regla
                 )
                 
-                # --- Guardar Deduplicado ---
                 if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
                     print(f"[DEBUG] Registro duplicado detectado desde Telegram para {remitente} (${monto_total}). Se omite.")
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
@@ -665,7 +681,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 print(f"[ERROR] Error al procesar PDF de Telegram: {str(e)}")
                 enviar_telegram(f"❌ Ocurrió un error al procesar tu archivo '{file_name}': {str(e)}")
                 
-        # Confirmar el procesamiento del ID para que Telegram no lo vuelva a enviar
         guardar_ultimo_update_id(ws_config, update_id)
 
 
