@@ -206,7 +206,6 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -512,10 +511,22 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
             if m:
                 # --- Identificación Dinámica de Columnas (BNA vs Naranja) ---
                 grupos = m.groups()
-                if len(grupos) == 5:
+                if len(grupos) == 6:
+                    # Formato Naranja con Tarjeta: fecha, tarjeta, comprobante, detalle, cuota, pesos
+                    fecha, tarjeta, comprobante, detalle, cuota_detectada, pesos = grupos
+                    detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
+                    
+                    pesos_val = normalizar_monto(pesos)
+                    # Regla Matemática Plan Zeta: Se divide por 3
+                    if cuota_detectada.strip().upper() == "ZETA":
+                        pesos_val = round(pesos_val / 3.0, 2)
+                        
+                    dolar_val = 0.0
+                    detalle_final = f"{detalle_limpio} ({tarjeta.strip()})"
+                elif len(grupos) == 5:
                     g4 = str(grupos[3]).strip()
                     if g4.upper() == "ZETA" or "/" in g4 or (g4.isdigit() and len(g4) == 2 and int(g4) <= 36):
-                        # Formato Naranja: fecha, comprobante, detalle, cuota, pesos
+                        # Formato Naranja sin Tarjeta: fecha, comprobante, detalle, cuota, pesos
                         fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
                         
@@ -525,12 +536,14 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                             pesos_val = round(pesos_val / 3.0, 2)
                             
                         dolar_val = 0.0
+                        detalle_final = detalle_limpio
                     else:
                         # Formato BNA Visa: fecha, comprobante, detalle, pesos, dolar
                         fecha, comprobante, detalle, pesos, dolar = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle)
                         pesos_val = normalizar_monto(pesos)
                         dolar_val = normalizar_monto(dolar)
+                        detalle_final = detalle_limpio
                 elif len(grupos) == 4:
                     # Formato alternativo sin dólares (como Naranja): fecha, comprobante, detalle, cuota, pesos
                     fecha, comprobante, detalle, cuota_detectada, pesos = grupos
@@ -542,13 +555,14 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                         pesos_val = round(pesos_val / 3.0, 2)
                         
                     dolar_val = 0.0
+                    detalle_final = detalle_limpio
                 else:
                     continue
 
                 consumos.append({
                     "fecha": formatear_fecha_consumo(fecha),
                     "comprobante": comprobante or "",
-                    "detalle": detalle_limpio,
+                    "detalle": detalle_final,
                     "cuota_actual": cuota_actual,
                     "cuota_total": cuota_total,
                     "pesos": pesos_val,
