@@ -2,10 +2,10 @@ name: Procesar Saldos (Gmail & Telegram)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Ejecución cada 15 minutos para Gmail
-  workflow_dispatch:        # Permite ejecución manual desde la interfaz de GitHub
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
   repository_dispatch:
-    types: [telegram_trigger]  # Escucha el evento en tiempo real enviado por Vercel
+    types: [telegram_trigger]
 
 jobs:
   procesar:
@@ -15,7 +15,7 @@ jobs:
     - name: Descargar repositorio
       uses: actions/checkout@v3
 
-    - name: Configurar Python
+    - name: Configurar Python con Caché de Dependencias
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
@@ -35,6 +35,5 @@ jobs:
         GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
         GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         FORZAR_EJECUCION: ${{ github.event_name == 'repository_dispatch' && 'true' || 'false' }}
-        # Inyecta el JSON de la actualización recibida de Telegram como variable de entorno
         TELEGRAM_UPDATE_PAYLOAD: ${{ toJson(github.event.client_payload.update) }}
       run: python bot_Saldo.py
