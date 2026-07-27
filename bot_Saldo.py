@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Tokenización Multi-Cajón...")
+print("[INICIO] Inicializando bot_Saldo.py con Deduplicación y Filtro de Consumos...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -129,6 +129,7 @@ def obtener_reglas():
                 "Clave": obtener_valor_clave_flexible(f, "Clave"),
                 "Activo": "SI",
                 "Tiene_Adjunto": obtener_valor_clave_flexible(f, "Tiene_Adjunto").upper() or "NO",
+                "Es_Tarjeta_Credito": obtener_valor_clave_flexible(f, "Es_Tarjeta_Credito").upper() or "NO",
                 "Regex_Consumo": obtener_valor_clave_flexible(f, "Regex_Consumo"),
                 "Regex_Cierre": obtener_valor_clave_flexible(f, "Regex_Cierre"),
                 "Regex_Vencimiento": obtener_valor_clave_flexible(f, "Regex_Vencimiento"),
@@ -138,7 +139,7 @@ def obtener_reglas():
 
     print(f"[DEBUG] Reglas activas encontradas: {len(reglas_activas)}")
     for i, r in enumerate(reglas_activas, 1):
-        print(f"  Regla {i}: Remitente={r.get('Remitente')}, Asunto={r.get('Asunto_Contiene', '')}, Tiene_Adjunto={r.get('Tiene_Adjunto')}")
+        print(f"  Regla {i}: Remitente={r.get('Remitente')}, Asunto={r.get('Asunto_Contiene', '')}, Tiene_Adjunto={r.get('Tiene_Adjunto')}, Tarjeta={r.get('Es_Tarjeta_Credito')}")
     return reglas_activas
 
 
@@ -154,7 +155,6 @@ def buscar_mails_nuevos(remitente, asunto_contiene):
 
 
 def limpiar_html(texto_html):
-    """Comprime todo el correo en una sola línea de lectura continua separada por espacios simples."""
     texto = re.sub(r"<[^>]+>", " ", texto_html)
     texto = re.sub(r"&nbsp;|&zwnj;", " ", texto)
     texto = re.sub(r"\s+", " ", texto)
@@ -204,7 +204,6 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -285,7 +284,6 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
-    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -305,7 +303,6 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
-    """Validación estricta de calendario (1-31) y (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -341,6 +338,34 @@ def extraer_cuotas(detalle_texto):
         detalle_limpio = re.sub(r'\s+C\.?\s*\d+\s*/\s*\d+', '', detalle_texto, flags=re.IGNORECASE).strip()
         return detalle_limpio, cuota_act, cuota_tot
     return detalle_texto.strip(), 1, 1
+
+
+def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+    """Evita duplicados: valida si ya existe el mismo remitente, monto y vencimiento en Consolidado."""
+    try:
+        filas = ws_consolidado.get_all_values()
+        if len(filas) <= 1:
+            return False
+            
+        m_cand = normalizar_monto(monto_total)
+        f_vto_cand = str(fecha_vencimiento).strip()
+        r_cand = str(remitente).strip().lower()
+        
+        # Fila: [Fecha Mail, Remitente, Asunto, Monto Total, Fecha Vencimiento, Link Drive]
+        for f in filas[1:]:
+            if len(f) >= 5:
+                try:
+                    m_sheet = normalizar_monto(f[3]) if f[3] else 0.0
+                    f_vto_sheet = str(f[4]).strip()
+                    r_sheet = str(f[1]).strip().lower()
+                    
+                    if r_sheet == r_cand and m_sheet == m_cand and f_vto_sheet == f_vto_cand:
+                        return True
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"[DEBUG] Error al verificar duplicados en Consolidado: {str(e)}")
+    return False
 
 
 def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
@@ -602,6 +627,7 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 remitente = regla["Remitente"]
                 clave = regla.get("Clave", "")
                 tiene_adjunto = regla.get("Tiene_Adjunto", "NO") == "SI"
+                es_tarjeta = regla.get("Es_Tarjeta_Credito", "NO") == "SI"
                 print(f"[DEBUG] PDF identificado como de: {remitente}")
                 
                 # Procesar PDF
@@ -618,7 +644,14 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                     pdf_sin_clave, "", fecha_mail_fmt, regla
                 )
                 
-                if ws_consumos is not None and consumos:
+                # --- Guardar Deduplicado ---
+                if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+                    print(f"[DEBUG] Registro duplicado detectado desde Telegram para {remitente} (${monto_total}). Se omite.")
+                    enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
+                    guardar_ultimo_update_id(ws_config, update_id)
+                    continue
+
+                if ws_consumos is not None and es_tarjeta and consumos:
                     guardar_consumos_sheet(ws_consumos, consumos, remitente)
                     
                 guardar_en_sheet(ws_consolidado, datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_drive)
@@ -666,10 +699,12 @@ def revisar_mails():
         asunto_contiene = regla.get("Asunto_Contiene", "")
         clave = str(regla.get("Clave", "")).strip()
         tiene_adjunto = str(regla.get("Tiene_Adjunto", "NO")).strip().upper() == "SI"
+        es_tarjeta = str(regla.get("Es_Tarjeta_Credito", "NO")).strip().upper() == "SI"
         
         print(f"[DEBUG] Remitente: {remitente}")
         print(f"[DEBUG] Asunto contiene: '{asunto_contiene}'")
         print(f"[DEBUG] Tiene Adjunto: {'SI' if tiene_adjunto else 'NO'}")
+        print(f"[DEBUG] Es Tarjeta de Crédito: {'SI' if es_tarjeta else 'NO'}")
 
         nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
@@ -689,7 +724,6 @@ def revisar_mails():
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
                         
-                        # Solo subir a Google Drive si NO es EPEC (para mantener a EPEC puramente temporal)
                         if "epec.com.ar" not in remitente.lower():
                             link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
                             print(f"[DEBUG] Archivo subido exitosamente a Google Drive: {link_drive}")
@@ -701,7 +735,7 @@ def revisar_mails():
                             pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
                         )
                         
-                        if ws_consumos is not None and consumos:
+                        if ws_consumos is not None and es_tarjeta and consumos:
                             guardar_consumos_sheet(ws_consumos, consumos, remitente)
                     except pikepdf.PasswordError:
                         print("[ERROR] Clave de PDF incorrecta")
@@ -713,6 +747,12 @@ def revisar_mails():
                     kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
                     kw_monto = str(regla.get("Regex_Monto", "")).strip()
                     _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
+
+            # --- Guardar Deduplicado ---
+            if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+                print(f"[DEBUG] Registro duplicado detectado para {remitente} (${monto_total}). Se omite.")
+                marcar_procesado(m["id"], label_id)
+                continue
 
             guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
             
