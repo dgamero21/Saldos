@@ -1,40 +1,40 @@
-name: Revisar mails
+name: Procesar Saldos (Gmail & Telegram)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/15 * * * *'  # Ejecución cada 15 minutos para Gmail
+  workflow_dispatch:        # Permite ejecución manual desde la interfaz de GitHub
   repository_dispatch:
-    types: [telegram_trigger]
-  workflow_dispatch:
-    inputs:
-      forzar:
-        description: 'Forzar ejecucion (ignora la hora del Sheet)'
-        required: false
-        default: false
-        type: boolean
+    types: [telegram_trigger]  # Escucha el evento en tiempo real enviado por Vercel
 
 jobs:
-  revisar:
+  procesar:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Clonar repo
-        uses: actions/checkout@v4
+    - name: Descargar repositorio
+      uses: actions/checkout@v3
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
 
-      - name: Instalar dependencias
-        run: pip install -r requirements.txt
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests gspread google-auth google-api-python-client pikepdf pdfplumber
 
-      - name: Ejecutar script
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          FORZAR_EJECUCION: ${{ github.event_name == 'repository_dispatch' || github.event.inputs.forzar }}
-        run: python bot_Saldo.py
+    - name: Ejecutar script de procesamiento
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        SHEET_ID: ${{ secrets.SHEET_ID }}
+        GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+        GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+        GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        FORZAR_EJECUCION: ${{ github.event_name == 'repository_dispatch' && 'true' || 'false' }}
+        # Inyecta el JSON de la actualización recibida de Telegram como variable de entorno
+        TELEGRAM_UPDATE_PAYLOAD: ${{ toJson(github.event.client_payload.update) }}
+      run: python bot_Saldo.py
