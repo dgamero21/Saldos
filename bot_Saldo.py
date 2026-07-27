@@ -185,6 +185,7 @@ def extraer_datos_mensaje_mime(mensaje_id):
         content_type = part.get_content_type()
         disposition = str(part.get("Content-Disposition", ""))
         
+        # Detectar adjunto PDF
         if "attachment" in disposition and part.get_filename() and part.get_filename().lower().endswith(".pdf"):
             pdf_filename = part.get_filename()
             pdf_bytes = part.get_payload(decode=True)
@@ -192,6 +193,7 @@ def extraer_datos_mensaje_mime(mensaje_id):
             pdf_filename = part.get_filename()
             pdf_bytes = part.get_payload(decode=True)
             
+        # Extraer cuerpos de texto
         if content_type == "text/html":
             cuerpo_html = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="ignore")
         elif content_type == "text/plain":
@@ -204,13 +206,14 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
+    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
         candidatos = urls
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Scientific/537.36, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     for url in candidatos:
@@ -304,6 +307,7 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
+    """Validación estricta de calendario (1-31) y (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -354,6 +358,7 @@ def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
 
 
 def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+    """Evita duplicados: valida si ya existe el mismo remitente, monto y vencimiento en Consolidado."""
     try:
         filas = ws_consolidado.get_all_values()
         if len(filas) <= 1:
@@ -363,6 +368,7 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
         f_vto_cand = str(fecha_vencimiento).strip()
         r_cand = str(remitente).strip().lower()
         
+        # Fila: [Fecha Mail, Remitente, Asunto, Monto Total, Fecha Vencimiento, Link Drive]
         for f in filas[1:]:
             if len(f) >= 5:
                 try:
@@ -512,7 +518,12 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                         # Formato Naranja: fecha, comprobante, detalle, cuota, pesos
                         fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
+                        
                         pesos_val = normalizar_monto(pesos)
+                        # Regla Matemática Plan Zeta: Se divide por 3
+                        if cuota_detectada.strip().upper() == "ZETA":
+                            pesos_val = round(pesos_val / 3.0, 2)
+                            
                         dolar_val = 0.0
                     else:
                         # Formato BNA Visa: fecha, comprobante, detalle, pesos, dolar
@@ -524,7 +535,12 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                     # Formato alternativo sin dólares (como Naranja): fecha, comprobante, detalle, cuota, pesos
                     fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                     detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
+                    
                     pesos_val = normalizar_monto(pesos)
+                    # Regla Matemática Plan Zeta: Se divide por 3
+                    if cuota_detectada.strip().upper() == "ZETA":
+                        pesos_val = round(pesos_val / 3.0, 2)
+                        
                     dolar_val = 0.0
                 else:
                     continue
@@ -661,6 +677,7 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                     pdf_sin_clave, "", fecha_mail_fmt, regla
                 )
                 
+                # --- Guardar Deduplicado ---
                 if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
                     print(f"[DEBUG] Registro duplicado detectado desde Telegram para {remitente} (${monto_total}). Se omite.")
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
