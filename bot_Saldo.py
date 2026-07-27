@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Procesamiento Gmail + Telegram...")
+print("[INICIO] Inicializando bot_Saldo.py con Tokenización Multi-Cajón...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -154,6 +154,7 @@ def buscar_mails_nuevos(remitente, asunto_contiene):
 
 
 def limpiar_html(texto_html):
+    """Comprime todo el correo en una sola línea de lectura continua separada por espacios simples."""
     texto = re.sub(r"<[^>]+>", " ", texto_html)
     texto = re.sub(r"&nbsp;|&zwnj;", " ", texto)
     texto = re.sub(r"\s+", " ", texto)
@@ -203,6 +204,7 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
+    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -283,6 +285,7 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
+    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -302,6 +305,7 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
+    """Validación estricta de calendario (1-31) y (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -340,20 +344,40 @@ def extraer_cuotas(detalle_texto):
 
 
 def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
-    """Algoritmo de cajones/palabras (Tokenización) para escaneo absoluto de izquierda a derecha."""
+    """Algoritmo de cajones/palabras (Tokenización) con coincidencia de secuencia de palabras (multi-cajón)."""
+    # Eliminar quirúrgicamente el bloque de contrato para evitar interferencias
     texto_unido_limpio = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_unido, flags=re.IGNORECASE)
+    
+    # Separar texto del correo por espacios (cajones)
     palabras = [p.strip() for p in texto_unido_limpio.split(" ") if p.strip()]
     
-    idx_kw = -1
-    for i, p in enumerate(palabras):
-        if p.lower() == kw_target.lower() or kw_target.lower() in p.lower():
-            idx_kw = i
+    # Separar la palabra clave de Datos en cajones individuales (para soportar frases como "Total a pagar")
+    kw_palabras = [k.strip().lower() for k in kw_target.split(" ") if k.strip()]
+    if not kw_palabras:
+        return None
+        
+    idx_fin_kw = -1
+    len_kw = len(kw_palabras)
+    
+    # Deslizar ventana para encontrar la secuencia exacta de cajones de la palabra clave
+    for i in range(len(palabras) - len_kw + 1):
+        coincide = True
+        for j in range(len_kw):
+            p_mail = palabras[i + j].rstrip(",:;").lower()
+            p_kw = kw_palabras[j]
+            # Coincidencia parcial o exacta
+            if p_mail != p_kw and p_kw not in p_mail:
+                coincide = False
+                break
+        if coincide:
+            idx_fin_kw = i + len_kw - 1  # Guardamos el índice del último cajón coincidente
             break
             
-    if idx_kw == -1:
+    if idx_fin_kw == -1:
         return None
 
-    for idx, p_cand in enumerate(palabras[idx_kw + 1 : idx_kw + 20], start=idx_kw + 1):
+    # Escanear los cajones inmediatamente posteriores al bloque de la palabra clave (hasta 20 cajones)
+    for idx, p_cand in enumerate(palabras[idx_fin_kw + 1 : idx_fin_kw + 20], start=idx_fin_kw + 1):
         p_cand_clean = p_cand.rstrip(",:;")
         
         if es_fecha:
@@ -363,13 +387,20 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
                 if f_val:
                     return f_val
         else:
+            # --- Regla de Coherencia de Dinero (Evita confundirse con números de cuenta o documento) ---
             monto_str = p_cand_clean.replace("$", "").strip()
+            
+            # Verificamos si cumple con el formato básico de número entero o decimal
             if re.match(r'^\d{1,3}(?:\.\d{3})+,\d{2}$', monto_str) or re.match(r'^\d+(?:[.,]\d{1,2})?$', monto_str):
                 try:
                     val = normalizar_monto(monto_str)
+                    
+                    # Filtro 1: No debe ser un número gigante de documento, medidor o CUIT
                     if val >= 10000000.0:
                         continue
                     
+                    # Filtro 2: Si es un entero puro sin decimales (ej: 0006):
+                    # Exigimos obligatoriamente que contenga "$" o que el cajón anterior en la lista sea "$"
                     tiene_decimales = ("," in monto_str) or ("." in monto_str)
                     tiene_signo_pesos = ("$" in p_cand) or (idx > 0 and palabras[idx - 1] == "$")
                     
@@ -658,6 +689,7 @@ def revisar_mails():
                     try:
                         pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
                         
+                        # Solo subir a Google Drive si NO es EPEC (para mantener a EPEC puramente temporal)
                         if "epec.com.ar" not in remitente.lower():
                             link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
                             print(f"[DEBUG] Archivo subido exitosamente a Google Drive: {link_drive}")
