@@ -2,6 +2,7 @@ import os
 import re
 import io
 import json
+import time
 import base64
 import email
 import email.header
@@ -549,6 +550,10 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                 else:
                     continue
 
+                # Evitar insertar pagos como consumos en la tarjeta
+                if es_pago_realizado(detalle_final):
+                    continue
+
                 consumos.append({
                     "fecha": formatear_fecha_consumo(fecha),
                     "comprobante": comprobante or "",
@@ -614,12 +619,23 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
             fila_idx = mapa_ids[id_unico]
             fila = valores_actuales[fila_idx]
             
-            fila[3] = c["cuota_actual"]       
-            fila[5] = c["pesos"]              
-            fila[6] = c["dolar"]              
-            fila[7] = c["fecha_cierre"]       
-            fila[8] = c["fecha_vencimiento"]  
-            existentes_actualizados += 1
+            # CONTROL DE SEGURIDAD: Solo actualizar si la nueva cuota leída es mayor o igual a la existente
+            try:
+                cuota_nueva = int(c["cuota_actual"])
+                cuota_existente = int(fila[3]) if str(fila[3]).isdigit() else 0
+            except Exception:
+                cuota_nueva = 1
+                cuota_existente = 0
+
+            if cuota_nueva >= cuota_existente:
+                fila[3] = c["cuota_actual"]       
+                fila[5] = c["pesos"]              
+                fila[6] = c["dolar"]              
+                fila[7] = c["fecha_cierre"]       
+                fila[8] = c["fecha_vencimiento"]  
+                existentes_actualizados += 1
+            else:
+                print(f"[DEBUG] Se omitió actualizar {id_unico} porque la cuota existente ({cuota_existente}) es mayor o igual a la nueva ({cuota_nueva}).")
         else:
             nueva_fila = [
                 c["fecha"],
@@ -642,7 +658,8 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
         while len(fila) < 11:
             fila.append("")
 
-    ws_consumos.update('A1', valores_actuales, value_input_option="USER_ENTERED")
+    # gspread compatible syntax to silence deprecation warnings
+    ws_consumos.update(values=valores_actuales, range_name='A1', value_input_option="USER_ENTERED")
     print(f"[DEBUG] Actualización en Google Sheets completada exitosamente. Registros actualizados: {existentes_actualizados} | Nuevos: {nuevos_agregados}")
 
 
@@ -919,6 +936,11 @@ def revisar_mails():
 
             nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
 
+            # ORDENAMIENTO CRONOLÓGICO: Invertir la lista para procesar desde el correo más antiguo al más nuevo
+            if nuevos:
+                print(f"[DEBUG] Ordenando {len(nuevos)} correos para procesamiento progresivo (Antiguo -> Nuevo)...")
+                nuevos.reverse()
+
             for m in nuevos:
                 asunto, fecha, cuerpo_texto, cuerpo_raw, pdf_filename, pdf_bytes = extraer_datos_mensaje_mime(m["id"])
                 link_drive = ""
@@ -974,6 +996,9 @@ def revisar_mails():
                 
                 marcar_procesado(m["id"], label_id)
                 total_procesados += 1
+                
+                # Pausa de cortesía para evitar saturación de la API de Google (errores 500)
+                time.sleep(1)
     else:
         print("[DEBUG] Ejecución exclusiva de Telegram. Omitiendo revisión de Gmail para reducir tiempos de espera.")
 
