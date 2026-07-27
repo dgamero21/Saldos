@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Algoritmo de Tokenización...")
+print("[INICIO] Inicializando bot_Saldo.py con Coherencia de Dinero...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -365,7 +365,7 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
         return None
 
     # Escanear los cajones hacia la derecha de uno en uno (revisa hasta 20 palabras a la derecha)
-    for p_cand in palabras[idx_kw + 1 : idx_kw + 20]:
+    for idx, p_cand in enumerate(palabras[idx_kw + 1 : idx_kw + 20], start=idx_kw + 1):
         p_cand_clean = p_cand.rstrip(",:;")
         
         if es_fecha:
@@ -376,14 +376,28 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
                 if f_val:
                     return f_val
         else:
-            # Validar patrón de dinero (con signo $, decimales opcionales, y límite de tamaño)
+            # --- Regla de Coherencia de Dinero (Evita confundirse con números de cuenta o documento) ---
             monto_str = p_cand_clean.replace("$", "").strip()
+            
+            # Verificamos si cumple con el formato básico de número entero o decimal
             if re.match(r'^\d{1,3}(?:\.\d{3})+,\d{2}$', monto_str) or re.match(r'^\d+(?:[.,]\d{1,2})?$', monto_str):
                 try:
                     val = normalizar_monto(monto_str)
-                    # Filtro de seguridad: descarta números gigantes de documentos/CUITs
-                    if val < 10000000.0:
-                        return val
+                    
+                    # Filtro 1: No debe ser un número gigante de documento, medidor o CUIT
+                    if val >= 10000000.0:
+                        continue
+                    
+                    # Filtro 2: Si es un entero puro sin decimales (ej: 0006):
+                    # Exigimos obligatoriamente que contenga "$" o que la palabra anterior en la lista sea "$"
+                    tiene_decimales = ("," in monto_str) or ("." in monto_str)
+                    tiene_signo_pesos = ("$" in p_cand) or (idx > 0 and palabras[idx - 1] == "$")
+                    
+                    if not tiene_decimales and not tiene_signo_pesos:
+                        # Es una cifra suelta de documento/factura, se ignora (ej: 0006)
+                        continue
+                        
+                    return val
                 except Exception:
                     continue
     return None
