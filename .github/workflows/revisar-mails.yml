@@ -3,6 +3,8 @@ name: Revisar mails
 on:
   schedule:
     - cron: '*/15 * * * *'
+  repository_dispatch:
+    types: [telegram_trigger]
   workflow_dispatch:
     inputs:
       forzar:
@@ -34,5 +36,5 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-          FORZAR_EJECUCION: ${{ github.event.inputs.forzar }}
+          FORZAR_EJECUCION: ${{ github.event_name == 'repository_dispatch' || github.event.inputs.forzar }}
         run: python bot_Saldo.py
