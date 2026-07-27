@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py con Algoritmo de Escaneo Horizontal...")
+print("[INICIO] Inicializando bot_Saldo.py con Algoritmo de Tokenización...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -164,7 +164,7 @@ def limpiar_html(texto_html):
 
 def extraer_datos_mensaje_mime(mensaje_id):
     msg = gmail_service.users().messages().get(userId="me", id=mensaje_id, format="raw").execute()
-    msg_bytes = base64.urlsafe_b64decode(msg_raw := msg["raw"])
+    msg_bytes = base64.urlsafe_b64decode(msg["raw"])
     mime_msg = email.message_from_bytes(msg_bytes)
     
     asunto_raw = mime_msg["Subject"] or "(sin asunto)"
@@ -207,7 +207,7 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Descarga de PDF por enlaces. Usa User-Agent de Chrome para evitar bloqueos."""
+    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -288,6 +288,7 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
+    """Soporta montos con coma (14439,4), punto (17161.6) y formato argentino (331.244,18)."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -307,6 +308,7 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
+    """Validación estricta de calendario (1-31) y (1-12) para descartar números de documento o contrato."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -344,47 +346,80 @@ def extraer_cuotas(detalle_texto):
     return detalle_texto.strip(), 1, 1
 
 
+def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
+    """Algoritmo de cajones/palabras (Tokenización) para escaneo absoluto de izquierda a derecha."""
+    # Eliminar quirúrgicamente el bloque de contrato para evitar interferencias
+    texto_unido_limpio = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_unido, flags=re.IGNORECASE)
+    
+    # Dividir el texto en una lista de palabras/cajones individuales
+    palabras = [p.strip() for p in texto_unido_limpio.split(" ") if p.strip()]
+    
+    # Encontrar el cajón/índice de la palabra clave
+    idx_kw = -1
+    for i, p in enumerate(palabras):
+        if p.lower() == kw_target.lower() or kw_target.lower() in p.lower():
+            idx_kw = i
+            break
+            
+    if idx_kw == -1:
+        return None
+
+    # Escanear los cajones hacia la derecha de uno en uno (revisa hasta 20 palabras a la derecha)
+    for p_cand in palabras[idx_kw + 1 : idx_kw + 20]:
+        p_cand_clean = p_cand.rstrip(",:;")
+        
+        if es_fecha:
+            # Validar patrón de fecha
+            m = re.match(r'^(\d{1,2})[./-]+([A-Za-z]{3,9}|\d{1,2})[./-]+(\d{2,4})$', p_cand_clean)
+            if m:
+                f_val = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
+                if f_val:
+                    return f_val
+        else:
+            # Validar patrón de dinero (con signo $, decimales opcionales, y límite de tamaño)
+            monto_str = p_cand_clean.replace("$", "").strip()
+            if re.match(r'^\d{1,3}(?:\.\d{3})+,\d{2}$', monto_str) or re.match(r'^\d+(?:[.,]\d{1,2})?$', monto_str):
+                try:
+                    val = normalizar_monto(monto_str)
+                    # Filtro de seguridad: descarta números gigantes de documentos/CUITs
+                    if val < 10000000.0:
+                        return val
+                except Exception:
+                    continue
+    return None
+
+
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Algoritmo de Escaneo de Izquierda a Derecha sobre Renglón Continuo."""
-    # 1. Limpieza Quirúrgica: Eliminar el bloque de contrato para que no interfiera en la lectura
-    texto_limpio_pdf = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_pdf, flags=re.IGNORECASE)
-    texto_limpio_mail = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_mail, flags=re.IGNORECASE)
-    texto_unido = texto_limpio_pdf + " " + texto_limpio_mail
+    """Extrae datos basándose en el algoritmo de Tokenización (Cajones)."""
+    texto_unido = texto_pdf + " " + texto_mail
     
     fecha_cierre = ""
     fecha_vencimiento = ""
     monto_total = 0.0
 
-    PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
-
-    # 2. Extracción de Fecha Cierre (Escaneo a la derecha)
+    # 1. Extracción de Fecha Cierre (Escaneo por tokens)
     kw_cierre_target = kw_cierre.strip() if kw_cierre else "CIERRE ACTUAL"
-    m_c = re.search(re.escape(kw_cierre_target) + r'[\s\S]*?' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-    if m_c:
-        fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
+    fecha_cierre_val = buscar_por_tokens(texto_unido, kw_cierre_target, es_fecha=True)
+    if fecha_cierre_val:
+        fecha_cierre = fecha_cierre_val
 
-    # 3. Extracción de Fecha Vencimiento (Escaneo a la derecha)
+    # 2. Extracción de Fecha Vencimiento (Escaneo por tokens)
     kw_vto_target = kw_vto.strip() if kw_vto else "VENCIMIENTO"
-    m_v = re.search(re.escape(kw_vto_target) + r'[\s\S]*?' + PATRON_FECHA, texto_unido, re.IGNORECASE)
-    if m_v:
-        fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
+    fecha_vto_val = buscar_por_tokens(texto_unido, kw_vto_target, es_fecha=True)
+    if fecha_vto_val:
+        fecha_vencimiento = fecha_vto_val
 
-    # Fallbacks de respaldo si no existía la palabra clave
+    # Fallbacks de respaldo
     if not fecha_cierre:
         fecha_cierre = fecha_mail_fmt
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 4. Extracción de Monto Total (Escaneo a la derecha de la palabra clave)
+    # 3. Extracción del Monto Total (Escaneo por tokens)
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
-    # Busca el primer número que tenga signo $ adelante, o formato con decimales (ignora enteros puros sin $)
-    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]*?(?:\$[\s]*(\d+(?:[.,]\d{1,2})?)|\b(\d{1,3}(?:\.\d{3})+,\d{2})\b|\b(\d+[.,]\d{1,2})\b)', texto_unido, re.IGNORECASE)
-    if m_monto:
-        try:
-            monto_str = next((g for g in m_monto.groups() if g is not None), "0")
-            monto_total = normalizar_monto(monto_str)
-        except Exception:
-            monto_total = 0.0
+    monto_val = buscar_por_tokens(texto_unido, kw_monto_target, es_fecha=False)
+    if monto_val is not None:
+        monto_total = monto_val
 
     return fecha_cierre, fecha_vencimiento, monto_total
 
@@ -496,7 +531,7 @@ def revisar_mails():
 
             # CASO A: Regla configurada con Tiene_Adjunto = SI
             if tiene_adjunto:
-                # Si no vino adjunto nativo en el MIME, probar descargando desde enlace HTML (EPEC)
+                # 1. Intentar adjunto físico tradicional en el mail
                 if not pdf_bytes:
                     pdf_filename, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
 
