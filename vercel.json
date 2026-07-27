@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/webhook.js": {
+      "runtime": "vercel-node@latest"
+    }
+  }
+}
