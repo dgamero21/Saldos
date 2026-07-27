@@ -19,7 +19,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py de Producción con Control de Cuotas...")
+print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -572,30 +572,25 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
 
     print(f"[DEBUG] Iniciando actualización inteligente para {len(consumos)} consumos de {remitente}...")
     
-    # 1. Descargar la hoja actual completa para procesamiento local
     valores_actuales = ws_consumos.get_all_values()
     
     if not valores_actuales:
-        # Si la hoja está completamente vacía, creamos los encabezados
         valores_actuales = [[
             "Fecha Consumo", "Comprobante", "Detalle", "Cuota Actual", "Cuota Total",
             "Pesos", "Dolar", "Fecha Cierre", "Fecha Vencimiento", "Remitente", "ID_Consumo"
         ]]
     
-    # Si existen los encabezados pero falta la columna de ID (K), la agregamos
     if len(valores_actuales[0]) < 11:
         print("[DEBUG] Estructura antigua detectada. Añadiendo columna K 'ID_Consumo'...")
         while len(valores_actuales[0]) < 10:
             valores_actuales[0].append("")
         valores_actuales[0].append("ID_Consumo")
 
-    # Mapeo de IDs existentes para realizar búsquedas rápidas en tiempo O(1)
     mapa_ids = {}
     for idx, fila in enumerate(valores_actuales):
         if idx == 0:
-            continue  # Omitir encabezado
+            continue
             
-        # Nos aseguramos de que la fila tenga espacio para las 11 columnas
         while len(fila) < 11:
             fila.append("")
             
@@ -607,7 +602,6 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
     existentes_actualizados = 0
 
     for c in consumos:
-        # Generamos el ID único normalizado de la transacción
         f_cons = str(c["fecha"]).strip()
         comp = str(c["comprobante"]).strip()
         det = str(c["detalle"]).strip()
@@ -617,18 +611,16 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
         id_unico = f"{f_cons}|{comp}|{det}|{c_tot}|{r_env}"
         
         if id_unico in mapa_ids:
-            # CASO A: El consumo ya existe. Se actualiza su fila local con los nuevos valores de cuota y fechas
             fila_idx = mapa_ids[id_unico]
             fila = valores_actuales[fila_idx]
             
-            fila[3] = c["cuota_actual"]       # Actualizar Cuota Actual
-            fila[5] = c["pesos"]              # Actualizar Importe Pesos
-            fila[6] = c["dolar"]              # Actualizar Importe Dólar
-            fila[7] = c["fecha_cierre"]       # Actualizar Fecha Cierre
-            fila[8] = c["fecha_vencimiento"]  # Actualizar Fecha Vencimiento
+            fila[3] = c["cuota_actual"]       
+            fila[5] = c["pesos"]              
+            fila[6] = c["dolar"]              
+            fila[7] = c["fecha_cierre"]       
+            fila[8] = c["fecha_vencimiento"]  
             existentes_actualizados += 1
         else:
-            # CASO B: El consumo es nuevo. Se crea un registro y se añade a la tabla local
             nueva_fila = [
                 c["fecha"],
                 c["comprobante"],
@@ -643,16 +635,13 @@ def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
                 id_unico
             ]
             valores_actuales.append(nueva_fila)
-            # Agregamos al mapa local en caso de que vengan transacciones idénticas en el mismo lote
             mapa_ids[id_unico] = len(valores_actuales) - 1
             nuevos_agregados += 1
 
-    # Aseguramos que todas las filas tengan consistencia de 11 columnas antes de enviar
     for fila in valores_actuales:
         while len(fila) < 11:
             fila.append("")
 
-    # 2. Reescritura completa en una única llamada API
     ws_consumos.update('A1', valores_actuales, value_input_option="USER_ENTERED")
     print(f"[DEBUG] Actualización en Google Sheets completada exitosamente. Registros actualizados: {existentes_actualizados} | Nuevos: {nuevos_agregados}")
 
@@ -733,12 +722,17 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
     
     payload_str = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
     
-    if not payload_str:
+    if not payload_str or payload_str == "null":
         print("[DEBUG] No se detectó payload de Telegram. Se omite el procesamiento de Telegram (vía cron/Gmail).")
         return
 
     try:
         update = json.loads(payload_str)
+        
+        if not update or not isinstance(update, dict):
+            print("[DEBUG] El payload decodificado no contiene una estructura de diccionario válida. Se omite.")
+            return
+            
         updates = [update]
         print("[DEBUG] Payload decodificado con éxito. Procesando update del Webhook.")
     except Exception as e:
@@ -765,7 +759,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                         fecha_hoy = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                         
                         if ws_consumos is not None:
-                            # Los consumos manuales se agregan al final ya que no tienen cuotas/ID de tarjeta recurrente
                             ws_consumos.append_row([
                                 fecha_hoy,
                                 "Telegram",
@@ -868,7 +861,6 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                     continue
 
                 if ws_consumos is not None and es_tarjeta and consumos:
-                    # Uso de la nueva función de actualización
                     guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente)
                     
                 guardar_en_sheet(ws_consolidado, datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_drive)
@@ -910,7 +902,7 @@ def revisar_mails():
 
     # 1. Procesar Gmail (Solo si no viene de una ejecución exclusiva de Telegram para agilizar respuesta)
     payload_telegram = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
-    if not payload_telegram:
+    if not payload_telegram or payload_telegram == "null":
         print(f"[DEBUG] Procesando {len(reglas)} reglas de Gmail...\n")
         for idx, regla in enumerate(reglas, 1):
             print(f"\n--- Regla {idx} ---")
@@ -955,7 +947,6 @@ def revisar_mails():
                             )
                             
                             if ws_consumos is not None and es_tarjeta and consumos:
-                                # Uso de la nueva función de actualización inteligente
                                 guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente)
                         except pikepdf.PasswordError:
                             print("[ERROR] Clave de PDF incorrecta")
@@ -997,7 +988,10 @@ def revisar_mails():
 if __name__ == "__main__":
     print("[MAIN] Iniciando ejecución principal...")
     try:
-        if debe_ejecutar_ahora() or os.environ.get("TELEGRAM_UPDATE_PAYLOAD"):
+        payload_telegram = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
+        tiene_payload_valido = payload_telegram and payload_telegram != "null"
+        
+        if debe_ejecutar_ahora() or tiene_payload_valido:
             print("[MAIN] Ejecutando revisar_mails()...")
             revisar_mails()
         else:
