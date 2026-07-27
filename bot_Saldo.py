@@ -782,9 +782,16 @@ def parsear_monto_manual(texto):
     texto_limpio = t_raw.replace("+", "").strip().lower().replace("$", "").replace(" ", "")
     
     factor = 1.0
-    if "mil" in texto_limpio:
+    # Soporte para Millones ('m', 'M', 'millon', 'millones') -> x 1.000.000
+    if any(kw in texto_limpio for kw in ["millones", "millon", "m"]):
+        factor = 1000000.0
+        for kw in ["millones", "millon", "m"]:
+            texto_limpio = texto_limpio.replace(kw, "")
+    # Soporte para Miles ('k', 'K', 'mil') -> x 1.000
+    elif any(kw in texto_limpio for kw in ["mil", "k"]):
         factor = 1000.0
-        texto_limpio = texto_limpio.replace("mil", "")
+        for kw in ["mil", "k"]:
+            texto_limpio = texto_limpio.replace(kw, "")
         
     m = re.match(r'^(\d+(?:[.,]\d{1,2})?)$', texto_limpio)
     if m:
