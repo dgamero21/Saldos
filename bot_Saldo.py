@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py de Producción...")
+print("[INICIO] Inicializando bot_Saldo.py con Inteligencia Conversacional...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -206,6 +206,7 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
+    """Descarga de PDF por enlaces usando firma de navegador real para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
@@ -597,35 +598,87 @@ def guardar_consumos_sheet(ws_consumos, consumos, remitente):
 
 # ---------- Procesamiento de Telegram ( getUpdates ) ----------
 
-def leer_ultimo_update_id(ws_config):
-    try:
-        filas = ws_config.get_all_records()
-        if filas:
-            return int(filas[0].get("Last_Telegram_Update_ID", 0))
-    except Exception:
-        pass
-    return 0
+def leer_config_completo(ws_config):
+    """Lee toda la hoja Config de forma segura y devuelve la memoria conversacional."""
+    valores = ws_config.get_all_values()
+    last_update_id = 0
+    state = ""
+    tipos = []
+    
+    if len(valores) > 1:
+        # Columna B: Last_Telegram_Update_ID
+        if len(valores[1]) > 1 and valores[1][1]:
+            try:
+                last_update_id = int(valores[1][1])
+            except Exception:
+                pass
+        # Columna C: Telegram_State
+        if len(valores[1]) > 2:
+            state = str(valores[1][2]).strip()
+            
+    # Columna E: Tipo (Categorías de gastos manuales), desde la fila 2 hacia abajo
+    for fila in valores[1:]:
+        if len(fila) > 4 and fila[4].strip():
+            tipos.append(fila[4].strip())
+            
+    return last_update_id, state, tipos
 
 
-def guardar_ultimo_update_id(ws_config, update_id):
+def guardar_estado_telegram(ws_config, estado):
     try:
-        ws_config.update_cell(2, 2, update_id)
+        # Guarda el estado de la conversación en la celda C2 (Telegram_State)
+        ws_config.update_cell(2, 3, estado)
     except Exception as e:
-        print(f"[DEBUG] Error al guardar update_id en Config: {str(e)}")
+        print(f"[DEBUG] Error al guardar estado en Config: {str(e)}")
 
 
-def identificar_regla_por_pdf(texto_pdf, reglas):
-    for r in reglas:
-        remitente = r["Remitente"].lower()
-        dominio = remitente.split("@")[-1].split(".")[0]
-        if dominio in texto_pdf.lower() or r["Asunto_Contiene"].lower() in texto_pdf.lower():
-            return r
+def parsear_monto_manual(texto):
+    """Detecta números o expresiones como 100mil o $5000 en el mensaje de texto."""
+    texto_limpio = str(texto).strip().lower().replace("$", "").replace(" ", "")
+    
+    # Soporte para abreviatura "mil" (ej: 100mil -> 100000)
+    factor = 1.0
+    if "mil" in texto_limpio:
+        factor = 1000.0
+        texto_limpio = texto_limpio.replace("mil", "")
+        
+    m = re.match(r'^(\d+(?:[.,]\d{1,2})?)$', texto_limpio)
+    if m:
+        try:
+            num = normalizar_monto(texto_limpio)
+            return round(num * factor, 2)
+        except Exception:
+            pass
     return None
 
 
+def enviar_teclado_categorias(chat_id, monto, tipos):
+    """Envía un teclado interactivo por Telegram con tus categorías configuradas."""
+    keyboard = []
+    fila = []
+    for t in tipos:
+        fila.append({"text": t, "callback_data": t})
+        if len(fila) == 2:
+            keyboard.append(fila)
+            fila = []
+    if fila:
+        keyboard.append(fila)
+        
+    reply_markup = {"inline_keyboard": keyboard}
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": f"❓ ¿A qué categoría corresponde el gasto manual de ${monto:,.2f}?",
+        "reply_markup": reply_markup
+    }
+    requests.post(url, json=payload)
+
+
 def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
+    """Llamada a getUpdates para procesar archivos PDF o gastos manuales por botones."""
     print("[DEBUG] Buscando mensajes nuevos en Telegram...")
-    last_update_id = leer_ultimo_update_id(ws_config)
+    last_update_id, state, tipos = leer_config_completo(ws_config)
     offset = last_update_id + 1 if last_update_id > 0 else 0
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}"
@@ -642,6 +695,57 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
     print(f"[DEBUG] Se encontraron {len(updates)} actualizaciones en Telegram.")
     for update in updates:
         update_id = update["update_id"]
+        
+        # CASO 1: Callback Query (Clic en botón de categoría)
+        callback_query = update.get("callback_query")
+        if callback_query:
+            chat_id = str(callback_query["message"]["chat"]["id"])
+            if chat_id == TELEGRAM_CHAT_ID:
+                data_seleccionada = callback_query["data"]
+                message_id = callback_query["message"]["message_id"]
+                
+                # Re-leer estado para obtener el monto guardado
+                _, state_actual, _ = leer_config_completo(ws_config)
+                if state_actual.startswith("ESPERANDO_TIPO|"):
+                    try:
+                        monto_str = state_actual.split("|")[1]
+                        monto_val = float(monto_str)
+                        fecha_hoy = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
+                        
+                        # Guardar el gasto manual directamente en la hoja Consumos
+                        if ws_consumos is not None:
+                            ws_consumos.append_row([
+                                fecha_hoy,
+                                "Telegram",
+                                data_seleccionada,
+                                1,
+                                1,
+                                monto_val,
+                                0.0,
+                                "",
+                                "",
+                                "Manual Telegram"
+                            ], value_input_option="USER_ENTERED")
+                            
+                        # Editar el mensaje de Telegram para quitar los botones y confirmar
+                        url_edit = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+                        payload_edit = {
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "text": f"✅ ¡Gasto de ${monto_val:,.2f} registrado con éxito en '{data_seleccionada}'!"
+                        }
+                        requests.post(url_edit, json=payload_edit)
+                        guardar_estado_telegram(ws_config, "")
+                        
+                    except Exception as e:
+                        print(f"[ERROR] Error al procesar selección de botón: {str(e)}")
+                        enviar_telegram(f"❌ Error al registrar gasto manual: {str(e)}")
+                        
+            # Marcar mensaje como procesado
+            ws_config.update_cell(2, 2, update_id)
+            continue
+
+        # CASO 2: Mensaje común de texto o archivo
         message = update.get("message")
         if not message:
             continue
@@ -650,6 +754,18 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
         if chat_id != TELEGRAM_CHAT_ID:
             continue
 
+        # A. Procesamiento de Texto (Gastos Manuales)
+        texto = message.get("text")
+        if texto:
+            monto_detectado = parsear_monto_manual(texto)
+            if monto_detectado is not None:
+                print(f"[DEBUG] Gasto manual detectado por texto: {monto_detectado}")
+                guardar_estado_telegram(ws_config, f"ESPERANDO_TIPO|{monto_detectado}")
+                enviar_teclado_categorias(chat_id, monto_detectado, tipos)
+                ws_config.update_cell(2, 2, update_id)
+                continue
+
+        # B. Procesamiento de Documento (Resúmenes en PDF)
         document = message.get("document")
         if document and document.get("mime_type") == "application/pdf":
             file_id = document["file_id"]
@@ -672,6 +788,7 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 if not regla:
                     print("[ERROR] No se pudo identificar la empresa/regla de este PDF.")
                     enviar_telegram("❌ Error: No logré identificar a qué empresa pertenece esta factura. Verifica que la regla esté activa en la hoja Datos.")
+                    ws_config.update_cell(2, 2, update_id)
                     continue
                 
                 remitente = regla["Remitente"]
@@ -695,7 +812,7 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
                     print(f"[DEBUG] Registro duplicado detectado desde Telegram para {remitente} (${monto_total}). Se omite.")
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
-                    guardar_ultimo_update_id(ws_config, update_id)
+                    ws_config.update_cell(2, 2, update_id)
                     continue
 
                 if ws_consumos is not None and es_tarjeta and consumos:
@@ -712,7 +829,8 @@ def procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config):
                 print(f"[ERROR] Error al procesar PDF de Telegram: {str(e)}")
                 enviar_telegram(f"❌ Ocurrió un error al procesar tu archivo '{file_name}': {str(e)}")
                 
-        guardar_ultimo_update_id(ws_config, update_id)
+        # Confirmar procesamiento
+        ws_config.update_cell(2, 2, update_id)
 
 
 # ---------- Flujo de Trabajo Principal ----------
@@ -810,7 +928,7 @@ def revisar_mails():
             marcar_procesado(m["id"], label_id)
             total_procesados += 1
 
-    # 2. Procesar Telegram (Archivos enviados por ti al chat)
+    # 2. Procesar Telegram (Archivos o Gastos Manuales)
     print("\n" + "="*60)
     procesar_mensajes_telegram(reglas, ws_consolidado, ws_consumos, ws_config)
     print("="*60 + "\n")
