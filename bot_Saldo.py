@@ -18,7 +18,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py...")
+print("[INICIO] Inicializando bot_Saldo.py con Algoritmo de Escaneo Horizontal...")
 
 try:
     # ---------- Configuración desde variables de entorno (secrets) ----------
@@ -154,20 +154,17 @@ def buscar_mails_nuevos(remitente, asunto_contiene):
 
 
 def limpiar_html(texto_html):
-    """Limpia HTML preservando los saltos de línea cruciales para separar tablas."""
+    """Comprime todo el correo en una sola línea continua de lectura para el bot."""
     texto = re.sub(r"<[^>]+>", " ", texto_html)
     texto = re.sub(r"&nbsp;|&zwnj;", " ", texto)
-    # Reemplazar múltiples espacios horizontales por uno solo
-    texto = re.sub(r"[ \t]+", " ", texto)
-    # Normalizar saltos de línea múltiples a uno solo
-    texto = re.sub(r"\n+", "\n", texto)
+    # Reemplazar todos los espacios (incluidos saltos de línea) por un solo espacio horizontal
+    texto = re.sub(r"\s+", " ", texto)
     return texto.strip()
 
 
 def extraer_datos_mensaje_mime(mensaje_id):
-    """Descarga el mail completo y decodifica cuerpos, adjuntos y asuntos."""
-    msg_raw = gmail_service.users().messages().get(userId="me", id=mensaje_id, format="raw").execute()
-    msg_bytes = base64.urlsafe_b64decode(msg_raw["raw"])
+    msg = gmail_service.users().messages().get(userId="me", id=mensaje_id, format="raw").execute()
+    msg_bytes = base64.urlsafe_b64decode(msg_raw := msg["raw"])
     mime_msg = email.message_from_bytes(msg_bytes)
     
     asunto_raw = mime_msg["Subject"] or "(sin asunto)"
@@ -210,10 +207,8 @@ def extraer_datos_mensaje_mime(mensaje_id):
 
 
 def descargar_pdf_desde_link(cuerpo_raw):
-    """Buscador universal de enlaces de descarga de PDF. Usa User-Agent para evitar bloqueos."""
+    """Descarga de PDF por enlaces. Usa User-Agent de Chrome para evitar bloqueos."""
     urls = re.findall(r'https?://[^\s"\'>]+', cuerpo_raw, re.IGNORECASE)
-    
-    # Filtrar enlaces candidatos
     candidatos = [u for u in urls if any(k in u.lower() for k in ["api/reportes", "descargar", "factura", "download", "pdf", "print"])]
     if not candidatos and urls:
         candidatos = urls
@@ -293,7 +288,6 @@ MESES_ESPANOL = {
 
 
 def normalizar_monto(texto):
-    """Soporta montos con coma, punto, miles y sin decimales de forma robusta."""
     t = str(texto).replace('$', '').strip()
     if '.' in t and ',' in t:
         t = t.replace('.', '').replace(',', '.')
@@ -313,7 +307,6 @@ def formatear_fecha_consumo(fecha_str):
 
 
 def convertir_fecha_texto(dia_str, mes_or_num, anio_str):
-    """Validación de calendario para filtrar números de contrato o factura."""
     try:
         dia_num = int(dia_str)
         if not (1 <= dia_num <= 31):
@@ -352,10 +345,11 @@ def extraer_cuotas(detalle_texto):
 
 
 def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
-    """Buscador genérico de Fechas e Importes. Filtra líneas que contengan la palabra 'CONTRATO'."""
-    # Eliminar líneas individuales con la palabra CONTRATO para evitar lecturas incorrectas
-    lineas_limpias = [l for l in (texto_pdf + "\n" + texto_mail).split("\n") if "CONTRATO" not in l.upper()]
-    texto_unido = "\n".join(lineas_limpias)
+    """Algoritmo de Escaneo de Izquierda a Derecha sobre Renglón Continuo."""
+    # 1. Limpieza Quirúrgica: Eliminar el bloque de contrato para que no interfiera en la lectura
+    texto_limpio_pdf = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_pdf, flags=re.IGNORECASE)
+    texto_limpio_mail = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_mail, flags=re.IGNORECASE)
+    texto_unido = texto_limpio_pdf + " " + texto_limpio_mail
     
     fecha_cierre = ""
     fecha_vencimiento = ""
@@ -363,35 +357,32 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
 
     PATRON_FECHA = r'(\d{1,2})[\s./-]+([A-Za-z]{3,9}|\d{1,2})[\s./-]+(\d{2,4})'
 
-    # 1. Extracción de Fecha Cierre
+    # 2. Extracción de Fecha Cierre (Escaneo a la derecha)
     kw_cierre_target = kw_cierre.strip() if kw_cierre else "CIERRE ACTUAL"
-    for m in re.finditer(re.escape(kw_cierre_target) + r'[\s\S]{0,60}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
-        f_cand = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
-        if f_cand:
-            fecha_cierre = f_cand
-            break
+    m_c = re.search(re.escape(kw_cierre_target) + r'[\s\S]*?' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+    if m_c:
+        fecha_cierre = convertir_fecha_texto(m_c.group(1), m_c.group(2), m_c.group(3))
 
-    # 2. Extracción de Fecha Vencimiento
+    # 3. Extracción de Fecha Vencimiento (Escaneo a la derecha)
     kw_vto_target = kw_vto.strip() if kw_vto else "VENCIMIENTO"
-    for m in re.finditer(re.escape(kw_vto_target) + r'[\s\S]{0,120}?' + PATRON_FECHA, texto_unido, re.IGNORECASE):
-        f_cand = convertir_fecha_texto(m.group(1), m.group(2), m.group(3))
-        if f_cand:
-            fecha_vencimiento = f_cand
-            break
+    m_v = re.search(re.escape(kw_vto_target) + r'[\s\S]*?' + PATRON_FECHA, texto_unido, re.IGNORECASE)
+    if m_v:
+        fecha_vencimiento = convertir_fecha_texto(m_v.group(1), m_v.group(2), m_v.group(3))
 
-    # Fallbacks de respaldo
+    # Fallbacks de respaldo si no existía la palabra clave
     if not fecha_cierre:
         fecha_cierre = fecha_mail_fmt
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
-    # 3. Extracción del Monto Total (Soporta enteros y decimales opcionales)
+    # 4. Extracción de Monto Total (Escaneo a la derecha de la palabra clave)
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
-    # Busca importes opcionalmente seguidos de centavos .XX o ,XX
-    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]{0,100}?\b(\d{1,3}(?:\.\d{3})+,\d{2}|\d+(?:[.,]\d{1,2})?)\b', texto_unido, re.IGNORECASE)
+    # Busca el primer número que tenga signo $ adelante, o formato con decimales (ignora enteros puros sin $)
+    m_monto = re.search(re.escape(kw_monto_target) + r'[\s\S]*?(?:\$[\s]*(\d+(?:[.,]\d{1,2})?)|\b(\d{1,3}(?:\.\d{3})+,\d{2})\b|\b(\d+[.,]\d{1,2})\b)', texto_unido, re.IGNORECASE)
     if m_monto:
         try:
-            monto_total = normalizar_monto(m_monto.group(1))
+            monto_str = next((g for g in m_monto.groups() if g is not None), "0")
+            monto_total = normalizar_monto(monto_str)
         except Exception:
             monto_total = 0.0
 
@@ -505,7 +496,7 @@ def revisar_mails():
 
             # CASO A: Regla configurada con Tiene_Adjunto = SI
             if tiene_adjunto:
-                # 1. Intentar adjunto físico tradicional en el mail
+                # Si no vino adjunto nativo en el MIME, probar descargando desde enlace HTML (EPEC)
                 if not pdf_bytes:
                     pdf_filename, pdf_bytes = descargar_pdf_desde_link(cuerpo_raw)
 
@@ -550,7 +541,7 @@ def revisar_mails():
             total_procesados += 1
 
     print(f"\n" + "="*60)
-    print(f"[RESULTADO] {total_procesados} mail(s) processed.")
+    print(f"[RESULTADO] {total_procesados} mail(s) procesado(s).")
     print("="*60 + "\n")
 
 
