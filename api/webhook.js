@@ -94,7 +94,6 @@ export default async function handler(req, res) {
     if (message && message.text) {
       const chat_id = String(message.chat.id);
       
-      // Permitir compatibilidad si TELEGRAM_CHAT_ID no coincide exactamente en formato
       if (!TELEGRAM_CHAT_ID || chat_id === String(TELEGRAM_CHAT_ID)) {
         const texto = message.text.trim();
         const esIngreso = texto.startsWith("+");
@@ -145,6 +144,9 @@ export default async function handler(req, res) {
             });
             if (fila.length > 0) keyboard.push(fila);
 
+            // AGREGAR BOTÓN EXPLÍCITO DE CANCELAR AL FINAL
+            keyboard.push([{ text: "❌ Cancelar", callback_data: "CANCELAR" }]);
+
             await sendTelegram(`${titulo} $${montoFinal.toLocaleString('en-US', { minimumFractionDigits: 2 })}?`, { inline_keyboard: keyboard });
             return res.status(200).json({ message: 'Teclado enviado en tiempo real.' });
 
@@ -157,15 +159,23 @@ export default async function handler(req, res) {
       }
     }
 
-    // ----- CASO C: Selección de Botón (Gasto o Ingreso) -----
+    // ----- CASO C: Selección de Botón (Gasto, Ingreso o Cancelar) -----
     const callbackQuery = update.callback_query;
     if (callbackQuery) {
       const chat_id = String(callbackQuery.message.chat.id);
       if (!TELEGRAM_CHAT_ID || chat_id === String(TELEGRAM_CHAT_ID)) {
         const dataSel = callbackQuery.data;
         const messageId = callbackQuery.message.message_id;
+
+        // C.1. Opción de Cancelar
+        if (dataSel === "CANCELAR") {
+          await editTelegram(messageId, "❌ Operación cancelada.");
+          return res.status(200).json({ message: 'Operación cancelada por el usuario.' });
+        }
+
         const hoy = new Date().toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", day: '2-digit', month: '2-digit', year: 'numeric' });
 
+        // C.2. Opción de Gasto Manual
         if (dataSel.startsWith("MANUAL|")) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
@@ -186,6 +196,7 @@ export default async function handler(req, res) {
           await editTelegram(messageId, `✅ ¡Gasto de $${montoVal.toLocaleString('en-US', { minimumFractionDigits: 2 })} registrado con éxito en '${catSel}'!`);
           return res.status(200).json({ message: 'Gasto registrado instantáneamente.' });
 
+        // C.3. Opción de Ingreso Manual
         } else if (dataSel.startsWith("INGRESO|")) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
