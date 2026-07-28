@@ -20,7 +20,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
-print("[INICIO] Inicializando bot_Saldo.py de Producción Ultrafast...")
+print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 
 # ---------- Configuración desde variables de entorno (secrets) ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
@@ -45,7 +45,7 @@ def get_credentials():
             client_id=os.environ["GOOGLE_CLIENT_ID"],
             client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=None,  # Usar los permisos autorizados en el Refresh Token automáticamente
+            scopes=None,
         )
     return _creds
 
@@ -256,13 +256,20 @@ def formatear_fecha_resumen(fecha_rfc2822):
 
 
 def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
+    m_cand = normalizar_monto(monto_total)
+    f_vto_cand = str(fecha_vencimiento).strip()
+    r_cand = str(remitente).strip().lower()
+    
+    id_consolidado = f"{r_cand}|{f_vto_cand}|{m_cand}"
+
     ws.append_row([
         formatear_fecha_resumen(fecha_rfc),
         remitente,
         asunto,
         monto_total,
         fecha_vencimiento,
-        link_drive
+        link_drive,
+        id_consolidado  # Columna G (ID Único)
     ], value_input_option="USER_ENTERED")
 
 
@@ -359,9 +366,15 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
         m_cand = normalizar_monto(monto_total)
         f_vto_cand = str(fecha_vencimiento).strip()
         r_cand = str(remitente).strip().lower()
+        id_buscado = f"{r_cand}|{f_vto_cand}|{m_cand}"
         
         for f in filas[1:]:
-            if len(f) >= 5:
+            # 1. Comprobación por ID único de Columna G si está presente
+            if len(f) >= 7 and f[6].strip():
+                if f[6].strip().lower() == id_buscado:
+                    return True
+            # 2. Comprobación de respaldo por valores
+            elif len(f) >= 5:
                 try:
                     m_sheet = normalizar_monto(f[3]) if f[3] else 0.0
                     f_vto_sheet = str(f[4]).strip()
@@ -713,7 +726,7 @@ def procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos):
             enviar_telegram(f"🗓️ Ingresos Fijos del Mes ({fecha_fijo}):\n" + "\n".join(msgs_i))
 
 
-# ---------- Procesamiento de Telegram ( Rápido / Ultra-Light ) ----------
+# ---------- Procesamiento de Telegram ----------
 
 def leer_config_completo(ws_config):
     valores = ws_config.get_all_values()
