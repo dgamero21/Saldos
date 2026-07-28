@@ -56,6 +56,17 @@ export default async function handler(req, res) {
     return dataToken.access_token;
   };
 
+  // Auxiliar para consultar datos de cualquier pestaña de Google Sheets
+  const fetchSheetValues = async (accessToken, range) => {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const data = await res.json();
+    return data.values || [];
+  };
+
+  // Formatear números a Moneda Argentina
+  const fmt = (num) => "$" + Number(num || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   try {
     const update = req.body;
     if (!update || !update.update_id) {
@@ -90,12 +101,15 @@ export default async function handler(req, res) {
       return res.status(200).json({ message: 'PDF derivado a GitHub Actions.' });
     }
 
-    // ----- CASO B: Texto de Gasto/Ingreso Manual (ej: "200mil", "+17M") -----
+    // ----- CASO B: Texto (Ingreso de Monto o Consultas Inteligentes) -----
     if (message && message.text) {
       const chat_id = String(message.chat.id);
       
       if (!TELEGRAM_CHAT_ID || chat_id === String(TELEGRAM_CHAT_ID)) {
         const texto = message.text.trim();
+        const textoLower = texto.toLowerCase();
+
+        // B.1. Detección de Monto Manual (+17M, 200mil, 17k, 5000)
         const esIngreso = texto.startsWith("+");
         let clean = texto.replace(/\+/g, "").trim().toLowerCase().replace(/\$/g, "").replace(/\s+/g, "");
 
@@ -116,11 +130,8 @@ export default async function handler(req, res) {
           
           try {
             const accessToken = await getGoogleAccessToken();
-            const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Config!E2:J100`;
-            const resSheet = await fetch(sheetUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
-            const dataSheet = await resSheet.json();
+            const rows = await fetchSheetValues(accessToken, "Config!E2:J100");
             
-            const rows = dataSheet.values || [];
             const tiposGastos = [];
             const tiposIngresos = [];
 
@@ -144,16 +155,155 @@ export default async function handler(req, res) {
             });
             if (fila.length > 0) keyboard.push(fila);
 
-            // AGREGAR BOTÓN EXPLÍCITO DE CANCELAR AL FINAL
             keyboard.push([{ text: "❌ Cancelar", callback_data: "CANCELAR" }]);
 
-            await sendTelegram(`${titulo} $${montoFinal.toLocaleString('en-US', { minimumFractionDigits: 2 })}?`, { inline_keyboard: keyboard });
+            await sendTelegram(`${titulo} ${fmt(montoFinal)}?`, { inline_keyboard: keyboard });
             return res.status(200).json({ message: 'Teclado enviado en tiempo real.' });
 
           } catch (errSheet) {
             console.error("[ERROR buscando en Sheets]:", errSheet);
             await sendTelegram(`❌ Error al conectar con Google Sheets desde Vercel: ${errSheet.message}`);
             return res.status(500).json({ error: errSheet.message });
+          }
+        }
+
+        // B.2. CONSULTA: Vencimientos / Facturas Pendientes
+        if (textoLower.includes("vencimiento") || textoLower.includes("debo") || textoLower.includes("proximo") || textoLower.includes("factura")) {
+          try {
+            const accessToken = await getGoogleAccessToken();
+            const rows = await fetchSheetValues(accessToken, "Consolidado!A2:F100");
+            
+            if (rows.length === 0) {
+              await sendTelegram("📋 No hay resúmenes ni facturas registradas en la pestaña Consolidado.");
+              return res.status(200).json({ message: 'Consulta sin datos.' });
+            }
+
+            let msgs = ["📅 **Próximos Vencimientos y Facturas:**\n"];
+            let totalFacturas = 0;
+
+            rows.forEach(r => {
+              const emisor = r[1] || r[2] || "Factura";
+              const monto = parseFloat(r[3]) || 0;
+              const vto = r[4] || "Sin fecha";
+              if (monto > 0) {
+                msgs.push(`• **${emisor}**: ${fmt(monto)} (Vence: ${vto})`);
+                totalFacturas += monto;
+              }
+            });
+
+            msgs.push(`\n🔴 **Total Pendiente:** ${fmt(totalFacturas)}`);
+            await sendTelegram(msgs.join("\n"));
+            return res.status(200).json({ message: 'Consulta de vencimientos respondida.' });
+          } catch (e) {
+            await sendTelegram(`❌ Error al consultar vencimientos: ${e.message}`);
+            return res.status(500).json({ error: e.message });
+          }
+        }
+
+        // B.3. CONSULTA: Balance / Resumen Mensual
+        if (textoLower.includes("balance") || textoLower.includes("resumen") || textoLower.includes("mes")) {
+          try {
+            const accessToken = await getGoogleAccessToken();
+            const hoy = new Date();
+            const mesActual = hoy.toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", month: '2-digit', year: 'numeric' });
+
+            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
+            const rowsIngresos = await fetchSheetValues(accessToken, "Ingresos!A2:E200");
+
+            let totalGastos = 0;
+            rowsConsumos.forEach(r => {
+              const fecha = r[0] || "";
+              const monto = parseFloat(r[5]) || 0;
+              if (fecha.includes(mesActual)) totalGastos += monto;
+            });
+
+            let totalIngresos = 0;
+            rowsIngresos.forEach(r => {
+              const fecha = r[0] || "";
+              const monto = parseFloat(r[2]) || 0;
+              if (fecha.includes(mesActual)) totalIngresos += monto;
+            });
+
+            const neto = totalIngresos - totalGastos;
+            const estadoEmoji = neto >= 0 ? "🟢" : "🔴";
+
+            const respuesta = [
+              `📊 **Resumen Financiero del Mes (${mesActual}):**\n`,
+              `💰 **Ingresos Totales:** ${fmt(totalIngresos)}`,
+              `📌 **Gastos Totales:** ${fmt(totalGastos)}`,
+              `_______________________`,
+              `${estadoEmoji} **Disponible Neto:** ${fmt(neto)}`
+            ].join("\n");
+
+            await sendTelegram(respuesta);
+            return res.status(200).json({ message: 'Consulta de balance respondida.' });
+          } catch (e) {
+            await sendTelegram(`❌ Error al consultar balance: ${e.message}`);
+            return res.status(500).json({ error: e.message });
+          }
+        }
+
+        // B.4. CONSULTA: Cuotas Activas
+        if (textoLower.includes("cuota") || textoLower.includes("deuda")) {
+          try {
+            const accessToken = await getGoogleAccessToken();
+            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
+
+            let msgs = ["💳 **Compras Activas en Cuotas:**\n"];
+            let cuotasEncontradas = 0;
+
+            rowsConsumos.forEach(r => {
+              const detalle = r[2] || "Compra";
+              const cAct = parseInt(r[3]) || 1;
+              const cTot = parseInt(r[4]) || 1;
+              const monto = parseFloat(r[5]) || 0;
+
+              if (cTot > 1 && cAct <= cTot) {
+                msgs.push(`• **${detalle}**: Cuota ${cAct} de ${cTot} (${fmt(monto)}/mes)`);
+                cuotasEncontradas++;
+              }
+            });
+
+            if (cuotasEncontradas === 0) {
+              await sendTelegram("💳 No tienes compras en cuotas registradas actualmente.");
+            } else {
+              await sendTelegram(msgs.join("\n"));
+            }
+            return res.status(200).json({ message: 'Consulta de cuotas respondida.' });
+          } catch (e) {
+            await sendTelegram(`❌ Error al consultar cuotas: ${e.message}`);
+            return res.status(500).json({ error: e.message });
+          }
+        }
+
+        // B.5. CONSULTA: Filtro por categoría de Gasto (ej: "gasto niñera")
+        if (textoLower.startsWith("gasto ") || textoLower.startsWith("gastos ")) {
+          try {
+            const catBuscada = textoLower.replace(/gastos|gasto/g, "").trim();
+            const accessToken = await getGoogleAccessToken();
+            const hoy = new Date();
+            const mesActual = hoy.toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", month: '2-digit', year: 'numeric' });
+
+            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
+            let totalCat = 0;
+            let items = 0;
+
+            rowsConsumos.forEach(r => {
+              const fecha = r[0] || "";
+              const detalle = (r[2] || "").toLowerCase();
+              const monto = parseFloat(r[5]) || 0;
+
+              if (fecha.includes(mesActual) && detalle.includes(catBuscada)) {
+                totalCat += monto;
+                items++;
+              }
+            });
+
+            await sendTelegram(`🔍 **Gastos en '${catBuscada.toUpperCase()}' (${mesActual}):**\n• Registros: ${items}\n• Total Acumulado: ${fmt(totalCat)}`);
+            return res.status(200).json({ message: 'Consulta por categoría respondida.' });
+          } catch (e) {
+            await sendTelegram(`❌ Error al consultar categoría: ${e.message}`);
+            return res.status(500).json({ error: e.message });
           }
         }
       }
@@ -167,15 +317,13 @@ export default async function handler(req, res) {
         const dataSel = callbackQuery.data;
         const messageId = callbackQuery.message.message_id;
 
-        // C.1. Opción de Cancelar
         if (dataSel === "CANCELAR") {
           await editTelegram(messageId, "❌ Operación cancelada.");
-          return res.status(200).json({ message: 'Operación cancelada por el usuario.' });
+          return res.status(200).json({ message: 'Operación cancelada.' });
         }
 
         const hoy = new Date().toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", day: '2-digit', month: '2-digit', year: 'numeric' });
 
-        // C.2. Opción de Gasto Manual
         if (dataSel.startsWith("MANUAL|")) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
@@ -193,10 +341,9 @@ export default async function handler(req, res) {
             })
           });
 
-          await editTelegram(messageId, `✅ ¡Gasto de $${montoVal.toLocaleString('en-US', { minimumFractionDigits: 2 })} registrado con éxito en '${catSel}'!`);
+          await editTelegram(messageId, `✅ ¡Gasto de ${fmt(montoVal)} registrado con éxito en '${catSel}'!`);
           return res.status(200).json({ message: 'Gasto registrado instantáneamente.' });
 
-        // C.3. Opción de Ingreso Manual
         } else if (dataSel.startsWith("INGRESO|")) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
@@ -214,7 +361,7 @@ export default async function handler(req, res) {
             })
           });
 
-          await editTelegram(messageId, `💰 ¡Ingreso de $${montoVal.toLocaleString('en-US', { minimumFractionDigits: 2 })} registrado con éxito en '${catSel}'!`);
+          await editTelegram(messageId, `💰 ¡Ingreso de ${fmt(montoVal)} registrado con éxito en '${catSel}'!`);
           return res.status(200).json({ message: 'Ingreso registrado instantáneamente.' });
         }
       }
