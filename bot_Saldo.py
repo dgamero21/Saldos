@@ -269,7 +269,7 @@ def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remi
         monto_total,
         fecha_vencimiento,
         link_drive,
-        id_consolidado  # Columna G (ID Único)
+        id_consolidado
     ], value_input_option="USER_ENTERED")
 
 
@@ -369,11 +369,9 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
         id_buscado = f"{r_cand}|{f_vto_cand}|{m_cand}"
         
         for f in filas[1:]:
-            # 1. Comprobación por ID único de Columna G si está presente
             if len(f) >= 7 and f[6].strip():
                 if f[6].strip().lower() == id_buscado:
                     return True
-            # 2. Comprobación de respaldo por valores
             elif len(f) >= 5:
                 try:
                     m_sheet = normalizar_monto(f[3]) if f[3] else 0.0
@@ -389,7 +387,7 @@ def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimie
     return False
 
 
-def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
+def buscar_por_tokens(texto_unido, kw_target, es_fecha=False, tomar_segundo=False):
     texto_unido_limpio = re.sub(r'\(?\s*contrato\s*[:\-]?\s*\d*[^\)]*\)?', '', texto_unido, flags=re.IGNORECASE)
     palabras = [p.strip() for p in texto_unido_limpio.split() if p.strip()]
     kw_palabras = [k.strip().lower().rstrip(",:;") for k in kw_target.split() if k.strip()]
@@ -415,6 +413,8 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
     if idx_fin_kw == -1:
         return None
 
+    coincidencias_encontradas = 0
+
     for idx, p_cand in enumerate(palabras[idx_fin_kw + 1 : idx_fin_kw + 20], start=idx_fin_kw + 1):
         p_cand_clean = p_cand.rstrip(",:;")
         
@@ -436,6 +436,12 @@ def buscar_por_tokens(texto_unido, kw_target, es_fecha=False):
                     tiene_signo_pesos = ("$" in p_cand) or (idx > 0 and palabras[idx - 1] == "$")
                     
                     if not tiene_decimales and not tiene_signo_pesos:
+                        continue
+                        
+                    coincidencias_encontradas += 1
+                    
+                    # REGLA EXCLUSIVA PARA NARANJA: Ignorar el primer monto (Total) y tomar el segundo (Plan Z)
+                    if tomar_segundo and coincidencias_encontradas == 1:
                         continue
                         
                     return val
@@ -464,7 +470,7 @@ def identificar_regla_por_pdf(texto_pdf, reglas):
     return None
 
 
-def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto=""):
+def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cierre="", kw_vto="", kw_monto="", remitente=""):
     texto_unido = texto_pdf + " " + texto_mail
     
     fecha_cierre = ""
@@ -486,8 +492,10 @@ def extraer_fechas_y_monto_global(texto_pdf, texto_mail, fecha_mail_fmt, kw_cier
     if not fecha_vencimiento:
         fecha_vencimiento = fecha_cierre
 
+    # Activar la toma del segundo monto exclusivamente si el remitente es Naranja
+    es_naranja = "naranja" in str(remitente).lower()
     kw_monto_target = kw_monto.strip() if kw_monto else "SALDO"
-    monto_val = buscar_por_tokens(texto_unido, kw_monto_target, es_fecha=False)
+    monto_val = buscar_por_tokens(texto_unido, kw_monto_target, es_fecha=False, tomar_segundo=es_naranja)
     if monto_val is not None:
         monto_total = monto_val
 
@@ -499,6 +507,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
     kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
     kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
     kw_monto = str(regla.get("Regex_Monto", "")).strip()
+    remitente = str(regla.get("Remitente", "")).strip()
 
     patron = re.compile(regex_personalizado or REGEX_CONSUMO_DEFAULT)
     consumos = []
@@ -509,7 +518,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
             texto_completo_pdf += (pagina.extract_text() or "") + "\n"
 
         fecha_cierre, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global(
-            texto_completo_pdf, texto_mail, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto
+            texto_completo_pdf, texto_mail, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto, remitente
         )
 
         for linea in texto_completo_pdf.split("\n"):
@@ -519,11 +528,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                 if len(grupos) == 6:
                     fecha, tarjeta, comprobante, detalle, cuota_detectada, pesos = grupos
                     detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
-                    
                     pesos_val = normalizar_monto(pesos)
-                    if cuota_detectada.strip().upper() == "ZETA":
-                        pesos_val = round(pesos_val / 3.0, 2)
-                        
                     dolar_val = 0.0
                     detalle_final = f"{detalle_limpio} ({tarjeta.strip()})"
                 elif len(grupos) == 5:
@@ -531,11 +536,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                     if g4.upper() == "ZETA" or "/" in g4 or (g4.isdigit() and len(g4) == 2 and int(g4) <= 36):
                         fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                         detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
-                        
                         pesos_val = normalizar_monto(pesos)
-                        if cuota_detectada.strip().upper() == "ZETA":
-                            pesos_val = round(pesos_val / 3.0, 2)
-                            
                         dolar_val = 0.0
                         detalle_final = detalle_limpio
                     else:
@@ -547,11 +548,7 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
                 elif len(grupos) == 4:
                     fecha, comprobante, detalle, cuota_detectada, pesos = grupos
                     detalle_limpio, cuota_actual, cuota_total = extraer_cuotas(detalle, cuota_detectada)
-                    
                     pesos_val = normalizar_monto(pesos)
-                    if cuota_detectada.strip().upper() == "ZETA":
-                        pesos_val = round(pesos_val / 3.0, 2)
-                        
                     dolar_val = 0.0
                     detalle_final = detalle_limpio
                 else:
@@ -1022,7 +1019,7 @@ def revisar_mails():
                             kw_cierre = str(regla.get("Regex_Cierre", "")).strip()
                             kw_vto = str(regla.get("Regex_Vencimiento", "")).strip()
                             kw_monto = str(regla.get("Regex_Monto", "")).strip()
-                            _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto)
+                            _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto, remitente)
 
                     if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
                         marcar_procesado(m["id"], label_id)
