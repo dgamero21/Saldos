@@ -45,12 +45,7 @@ def get_credentials():
             client_id=os.environ["GOOGLE_CLIENT_ID"],
             client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=[
-                "https://www.googleapis.com/auth/gmail.readonly",
-                "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive.file",
-            ],
+            scopes=None,  # Usar los permisos autorizados en el Refresh Token automáticamente
         )
     return _creds
 
@@ -811,7 +806,6 @@ def procesar_mensajes_telegram():
         print(f"[ERROR] No se pudo decodificar el payload de Telegram: {str(e)}")
         return
 
-    # Carga diferida únicamente de la hoja Config para agilizar respuesta
     sh = get_gc().open_by_key(SHEET_ID)
     ws_config = sh.worksheet("Config")
     _, _, tipos_gastos, tipos_ingresos = leer_config_completo(ws_config)
@@ -824,7 +818,6 @@ def procesar_mensajes_telegram():
                 data_seleccionada = callback_query["data"]
                 message_id = callback_query["message"]["message_id"]
                 
-                # A. Registrar Gasto Manual
                 if data_seleccionada.startswith("MANUAL|"):
                     try:
                         partes = data_seleccionada.split("|")
@@ -844,7 +837,6 @@ def procesar_mensajes_telegram():
                     except Exception as e:
                         enviar_telegram(f"❌ Error al registrar gasto manual: {str(e)}")
 
-                # B. Registrar Ingreso Manual
                 elif data_seleccionada.startswith("INGRESO|"):
                     try:
                         partes = data_seleccionada.split("|")
@@ -1055,7 +1047,6 @@ if __name__ == "__main__":
         payload_telegram = os.environ.get("TELEGRAM_UPDATE_PAYLOAD", "").strip()
         tiene_payload_valido = payload_telegram and payload_telegram != "null"
         
-        # SI ES UN MENSAJE DE TELEGRAM: Ejecutar ruta ultra-rápida omitiendo conexiones innecesarias
         if tiene_payload_valido:
             print("[MAIN] Ejecución exclusiva de Telegram (Ruta ultra-rápida)...")
             procesar_mensajes_telegram()
