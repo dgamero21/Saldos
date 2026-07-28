@@ -2,7 +2,7 @@ name: Procesar Saldos (Gmail & Telegram)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '0 09,21 * * *'  # 9:00 AM y 18:00 PM Argentina
   workflow_dispatch:
   repository_dispatch:
     types: [telegram_trigger]
