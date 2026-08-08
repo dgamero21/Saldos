@@ -371,8 +371,8 @@ def test_telegram_gasto_manual_no_escribe_en_sheets(bot_module, monkeypatch):
 
     monkeypatch.setattr(bot_module, "get_gc", lambda: GC())
     monkeypatch.setattr(
-        supabase_client, "obtener_config_completo",
-        lambda: (0, "", ["ALQUILER"], ["SUELDO"]),
+        bot_module, "leer_config_completo",
+        lambda ws: (0, "", ["ALQUILER"], ["SUELDO"]),
     )
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
 
@@ -421,8 +421,8 @@ def test_telegram_ingreso_manual_usa_supabase(bot_module, monkeypatch):
 
     monkeypatch.setattr(bot_module, "get_gc", lambda: GC())
     monkeypatch.setattr(
-        supabase_client, "obtener_config_completo",
-        lambda: (0, "", ["ALQUILER"], ["SUELDO"]),
+        bot_module, "leer_config_completo",
+        lambda ws: (0, "", ["ALQUILER"], ["SUELDO"]),
     )
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
     monkeypatch.setattr(
