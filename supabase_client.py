@@ -585,3 +585,51 @@ def guardar_ingreso(fecha, tipo, monto, origen="Manual Telegram") -> str:
         return "insertado" if cur.rowcount == 1 else "existente"
 
     return _write_in_transaction(_insertar)
+
+
+# ---------------------------------------------------------------------------
+# FASE 5 — GMAIL / idempotencia por mensaje_id
+#
+# La tabla mensajes_procesados reemplaza al label Gmail como persistencia
+# principal del estado "ya procesado". El label puede seguir existiendo como
+# respaldo / señal visual en Gmail, pero la fuente de verdad es Supabase.
+# ---------------------------------------------------------------------------
+
+def mensaje_ya_procesado(mensaje_id) -> bool:
+    """True si el mensaje Gmail ya fue registrado en mensajes_procesados."""
+    mensaje = str(mensaje_id or "").strip()
+    if not mensaje:
+        return False
+    fila = _fetch_one(
+        "SELECT 1 FROM mensajes_procesados WHERE mensaje_id = %s LIMIT 1",
+        (mensaje,),
+    )
+    return fila is not None
+
+
+def registrar_mensaje_procesado(mensaje_id, remitente="", asunto="") -> str:
+    """Registra un mensaje Gmail como procesado.
+
+    UPSERT idempotente sobre UNIQUE(mensaje_id). Devuelve:
+        'insertado' | 'existente'
+    """
+    mensaje = str(mensaje_id or "").strip()
+    if not mensaje:
+        raise SupabaseWriteError(
+            "[SUPABASE WRITE ERROR] mensaje_id inválido en mensajes_procesados"
+        )
+    rem = str(remitente or "").strip()
+    subj = str(asunto or "").strip()
+
+    def _insertar(cur):
+        cur.execute(
+            """
+            INSERT INTO mensajes_procesados (mensaje_id, remitente, asunto)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (mensaje_id) DO NOTHING
+            """,
+            (mensaje, rem, subj),
+        )
+        return "insertado" if cur.rowcount == 1 else "existente"
+
+    return _write_in_transaction(_insertar)

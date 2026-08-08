@@ -9,112 +9,65 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 4 — Bot: escritura (IMPLEMENTADO + VALIDADO)
-ESTADO:             PENDIENTE GATE — código listo, tests verdes, falta aprobación
-AGENTE ACTUAL:      CODE REVIEW
+FASE ACTUAL:        FASE 6 — Drive -> Supabase Storage (ANÁLISIS)
+ESTADO:             EN PROGRESO
+AGENTE ACTUAL:      ANALISTA
 ```
 
 **OBJETIVO DE LA FASE:**
-- Migrar las ESCRITURAS del bot (Consolidado, Consumos, Ingresos y fijos
-  mensuales) desde Google Sheets a Supabase como persistencia PRINCIPAL.
-- SIN doble escritura: Supabase escribe; Sheets NO recibe escrituras (ni
-  accidentales). Si Supabase falla → error explícito `[SUPABASE WRITE ERROR]`,
-  nunca insertar en Sheets en silencio.
-- Preservar la semántica de dedup 1:1 (garantizada por los UNIQUE INDEX de la
-  DB: `lower(remitente)|vto|monto`, `fecha|comprobante|detalle|cuota_total|
-  remitente`, `fecha|tipo|origen`) y la lógica de cuotas (nunca retroceden).
-- NO eliminar `gspread`/`GOOGLE_*`/`SHEET_ID` (respaldo de LECTURA). NO tocar
-  `api/webhook.js` (FASE 7).
+- Reemplazar progresivamente Google Drive por Supabase Storage para los PDFs
+  del bot, manteniendo el comportamiento funcional actual.
+- Mantener bucket `pdfs` PRIVADO; preferir signed URLs si son compatibles.
+- Preservar: PDFs protegidos, límite 10 MB, `application/pdf`, caso especial
+  EPEC sin almacenamiento, mismo procesamiento PDF y misma deduplicación.
+- NO tocar `api/webhook.js`, NO retirar aún credenciales Google y NO eliminar
+  referencias a Drive hasta validar FASE 6.
 
 **CAMBIOS REALIZADOS:**
-- `supabase_client.py` — MODIFICADO: capa de ESCRITURA (FASE 4):
-  - `SupabaseWriteError`; `_get_conn(for_write=True)` (errores de escritura);
-    helpers `_a_fecha`/`_a_monto`/`_a_int`; `_write_in_transaction(fn)`
-    (transacción + reintento por UniqueViolation en carreras concurrentes).
-  - `guardar_consolidado()` → UPSERT idempotente `ON CONFLICT
-    (lower(remitente), fecha_vencimiento, monto_total) DO NOTHING`;
-    devuelve `'insertado' | 'existente'` (equivale a guardar_en_sheet +
-    es_registro_duplicado).
-  - `guardar_o_actualizar_consumos()` → insert / update solo si
-    `cuota_actual >= existente` (nunca retrocede); comprobante RAW;
-    devuelve estados por ítem `'insertado'|'actualizado'|'sin_cambios'`.
-  - `guardar_ingreso()` → `ON CONFLICT (fecha, tipo, origen) DO NOTHING`,
-    ID legacy reproducible (`fecha|Ingreso|tipo|origen`).
-  - `existe_consolidado()` → lectura de dedup (1:1 con es_registro_duplicado).
-- `bot_Saldo.py` — MODIFICADO (escrituras → Supabase, sin tocar Sheets):
-  - `guardar_en_sheet()` → delega en `guardar_consolidado()` (ws ignorado).
-  - `guardar_o_actualizar_consumos_sheet()` → delega en
-    `guardar_o_actualizar_consumos()`.
-  - `es_registro_duplicado()` → Supabase primero (lectura) + fallback Sheets.
-  - `procesar_fijos_mensuales()` → fijos gastos/ingresos se escriben en
-    Supabase (mensajes Telegram SOLO para los insertados).
-  - Telegram manual (`MANUAL|`/`INGRESO|`) → `guardar_o_actualizar_consumos`
-    / `guardar_ingreso`; ya no pide la hoja Consumos/Ingresos.
-- `tests/test_fase4_write.py` — NUEVO (unit con mocks: upsert, cuota no
-  retrocede, IDs legacy, errores explícitos, Sheets NO recibe escrituras,
-  reintento UniqueViolation, es_registro_duplicado Supabase-first).
-- `tests/test_fase4_integracion.py` — NUEVO (DB real con sentinels + cleanup:
-  dedup consolidado/consumos/ingresos, fijos y cambio de mes, concurrencia
-  6 hilos → 1 fila, regresión vs lógica anterior).
-- `tests/test_fase3_integracion.py` — ACTUALIZADO: tests de fijos validan la
-  nueva ruta de escritura (Supabase) y que sin credenciales la escritura falla
-  explícito sin tocar Sheets.
-- `tests/test_smoke.py` — ACTUALIZADO: baseline de blob de `bot_Saldo.py` al
-  estado FASE 4 (hash nuevo, comentado).
+- GATE FASE 5 aprobado por el usuario; pendiente commitear el baseline y luego
+  ejecutar nuevamente la suite completa antes de avanzar con la implementación
+  de FASE 6.
 
 **TESTS EJECUTADOS:**
-- Con `SUPABASE_DBPW` (DB real): `pytest tests/` → 89 passed, 5 skipped,
-  1 failed (solo `test_smoke.py::test_working_tree_limpio_para_produccion`,
-  esperado: `bot_Saldo.py` modificado sin commitear; se resuelve al commitear
-  el baseline tras el gate).
-- Sin credenciales: 70 passed, 24 skipped, 1 failed (mismo smoke).
-- Suite FASE 4 específica: `test_fase4_write.py` 22/22 +
-  `test_fase4_integracion.py` 12/12 PASS (dedup real, concurrencia, regresión).
-- Validación de conflict targets contra DB real (EXPLAIN): OK en las 3 tablas.
-- Verificado: sin residuos de pruebas en la DB (sentinels limpiados; fijos
-  `Fijo Config`/`SUELDO` de una corrida fallida purgados).
+- FASE 5 antes del commit baseline: `pytest tests/` → 103 passed, 5 skipped,
+  1 failed (solo smoke de working tree esperado).
 
 **TESTS FALLIDOS:**
-- `tests/test_smoke.py::test_working_tree_limpio_para_produccion` — POR DISEÑO:
-  FASE 4 modifica `bot_Saldo.py` (trackeado) de forma intencional; el guard de
-  FASE 0 se actualiza al commitear el nuevo baseline (post-gate).
+- Ninguno confirmado post-commit todavía. Pendiente rerun completo tras cerrar el
+  baseline de FASE 5.
 
 **PROBLEMAS ABIERTOS:**
-- Escrituras a Sheets desactivadas (FASE 4): si Supabase no está configurado,
-  cualquier escritura falla explícito (`SupabaseNotConfiguredError` /
-  `[SUPABASE WRITE ERROR]`) — comportamiento intencional (sin doble escritura).
+- El label Gmail sigue existiendo como respaldo/observabilidad; su retiro total
+  o simplificación se decide más adelante si ya no aporta valor operativo.
 - Bucket `pdfs` PRIVADO / signed URLs: decisión FASE 6.
-- Gmail/Drive/Telegram/webhook/secrets: FASE 5-8.
-- `es_registro_duplicado` conserva fallback de LECTURA a Sheets (respaldo).
+- Drive/Telegram/webhook/secrets: FASE 6-8.
 
 **RIESGOS:**
-- Mientras la hoja siga existiendo, escrituras nuevas van SOLO a Supabase: la
-  hoja queda como histórico/lectura. Migración definitiva = FASE 10.
-- `comprobante` en DB es TEXT raw; en Sheets quedó normalizado por
-  `USER_ENTERED`. La dedup usa el raw (como el ID_Consumo legacy).
+- Si Gmail etiqueta falla pero Supabase registra bien, el bot no reprocesa, pero
+  el label visible en la casilla puede quedar desincronizado.
+- Si Supabase no está disponible, el fallback al label Gmail evita reprocesar,
+  pero la fuente principal vuelve temporalmente al mecanismo anterior.
 
 **DECISIONES:**
-- UPSERT idempotente apoyado en los UNIQUE INDEX (integridad en PostgreSQL,
-  no SELECT+INSERT) → seguro bajo concurrencia cron + dispatch.
-- Sin fallback de escritura a Sheets (solo lecturas tienen fallback).
-- Mensajes de fijos solo para registros realmente insertados.
+- `mensajes_procesados` es la fuente principal de idempotencia Gmail.
+- El filtro Gmail `-label:Procesado-Resumen` solo se usa cuando Supabase no está
+  disponible; con Supabase disponible se consulta todo y se decide por DB.
+- Registrar el `mensaje_id` ocurre también cuando el resumen resulta duplicado
+  por lógica de negocio, para no volver a recorrer ese mismo mail.
 
-**CRITERIO DE PASS (FASE 4):**
-- [x] Consolidado: inserta / dedup / monto distinto / vto distinto / case
-- [x] Consumos: insert / update por cuota / cuota menor NO retrocede /
-      pesos/dólares/cierre/vto preservados / comprobante legacy raw
-- [x] Ingresos: insert / dedup / ID reproducible
-- [x] Fijos: gasto / ingreso / dup / cambio de mes
-- [x] Concurrencia: N escrituras simultáneas → 1 fila (UNIQUE de la DB)
-- [x] Regresión: estado final DB == lógica anterior (consumos y consolidado)
-- [x] Sheets NO recibe escrituras accidentales (tests con mocks)
-- [x] Sin hardcodear secretos; `GOOGLE_*`/`SHEET_ID` intactos; webhook intacto
-- [x] Suite completa con DB real: 89 passed / 5 skipped / 1 smoke esperado
+**CRITERIO DE PASS (FASE 5):**
+- [x] `mensaje_id` se registra con UPSERT idempotente en `mensajes_procesados`
+- [x] `mensaje_ya_procesado` consulta Supabase primero
+- [x] Fallback explícito al label Gmail si la lectura Supabase falla
+- [x] `revisar_mails()` evita volver a extraer MIME/PDF de un mail ya registrado
+- [x] Mails duplicados de negocio también quedan marcados por `mensaje_id`
+- [x] Concurrencia: N registros simultáneos del mismo `mensaje_id` → 1 fila
+- [x] Sin tocar webhook; sin secretos hardcodeados
+- [x] Suite completa con DB real: 103 passed / 5 skipped / 1 smoke esperado
 
 **PRÓXIMA ACCIÓN:**
-- Reportar GATE FASE 4 y esperar aprobación del usuario antes de FASE 5.
-  No avanzar de fase sin gate. Tras aprobación: commitear baseline (resuelve
-  el smoke) y arrancar FASE 5 (Gmail).
+- Commitear baseline de FASE 5, verificar suite 100% verde y ejecutar FASE 6
+  completa (análisis -> diseño -> implementación -> tests -> code review).
 
 ---
 
@@ -154,12 +107,20 @@ AGENTE ACTUAL:      CODE REVIEW
 - **CODE REVIEW**: PASS. Verificado: solo 4 lecturas migradas (resto intacto), formato de reglas 1:1, fallback por función, secretos solo por env, GOOGLE_*/SHEET_ID intactos.
 - **GATE**: APROBADO por el usuario el 2026-08-08 (los 2 fallos de test_smoke aceptados como esperados; no bloquean FASE 4).
 
-### FASE 4 — Bot: escritura (Supabase, sin doble escritura) — **IMPLEMENTADO + VALIDADO (PENDIENTE GATE) 2026-08-08**
+### FASE 4 — Bot: escritura (Supabase, sin doble escritura) — **PASS 2026-08-08**
 - **ANALISTA**: relevadas las rutas de escritura de Sheets (guardar_en_sheet, guardar_o_actualizar_consumos_sheet, es_registro_duplicado, fijos mensuales, Telegram manual MANUAL|/INGRESO|); mapeo de dedup 1:1 con los UNIQUE INDEX (test_dedup_schema).
 - **ARQUITECTO**: UPSERT idempotente con ON CONFLICT sobre los UNIQUE dedup (integridad en PostgreSQL bajo concurrencia); transacción + reintento por UniqueViolation; sin fallback de escritura a Sheets (error explícito `[SUPABASE WRITE ERROR]`); cuota nunca retrocede; comprobante raw.
 - **IMPLEMENTADOR**: capa de escritura en `supabase_client.py` (guardar_consolidado, guardar_o_actualizar_consumos, guardar_ingreso, existe_consolidado, _write_in_transaction); migradas las escrituras de `bot_Saldo.py` a Supabase (ws ignorado); fijos y Telegram manual sin tocar la hoja.
 - **TESTER**: `test_fase4_write.py` 22/22 (mocks, Sheets no escribe); `test_fase4_integracion.py` 12/12 (DB real: dedup, cuotas, fijos, concurrencia 6 hilos → 1 fila, regresión vs lógica anterior, sentinels limpiados); validación EXPLAIN de conflict targets 3/3; suite completa con DB real 89 passed / 5 skipped / 1 smoke esperado (working_tree por no commitear aún).
 - **CODE REVIEW**: PASS. Verificado: sin doble escritura (ws ignorado), secretos por env, webhook intacto, GOOGLE_*/SHEET_ID intactos, residuos 0 en DB.
+- **GATE**: APROBADO por el usuario el 2026-08-08 → se procede a FASE 5. Baseline commiteado (`532e762` + ajuste smoke) y suite 100% verde: **90 passed, 5 skipped**. El guard de head se relajó a "descendiente del baseline" (`262a215`) porque todo commit legítimo mueve HEAD (la igualdad estricta rompía tras cada commit).
+
+### FASE 5 — Gmail (mensajes_procesados) — **IMPLEMENTADO + VALIDADO (PENDIENTE GATE) 2026-08-08**
+- **ANALISTA**: relevado el flujo actual de Gmail (`buscar_mails_nuevos`, `extraer_datos_mensaje_mime`, `marcar_procesado`, `revisar_mails`); identificado que la idempotencia dependía del label `Procesado-Resumen` y que el schema ya disponía de `mensajes_procesados (UNIQUE mensaje_id)` para migrarla.
+- **ARQUITECTO**: Supabase pasa a ser la fuente principal de idempotencia por `mensaje_id`; el label Gmail queda como respaldo / señal visual. Con Supabase disponible, la búsqueda NO excluye por label y el skip se decide por DB; si la lectura falla, fallback explícito al label. La escritura del registro del mensaje es obligatoria y sin fallback silencioso.
+- **IMPLEMENTADOR**: añadidos `mensaje_ya_procesado()` y `registrar_mensaje_procesado()` en `supabase_client.py`; en `bot_Saldo.py` se agregaron `mensaje_tiene_label()`, `mensaje_ya_procesado()`, `registrar_y_marcar_mensaje_procesado()` y la integración en `revisar_mails()` para saltar mails ya procesados antes de extraer MIME/PDF y registrar también los duplicados de negocio.
+- **TESTER**: `test_fase5_gmail.py` (unit) + `test_fase5_integracion.py` (DB real) + ampliación de `test_supabase_client.py` → **38/38 PASS**; suite completa con DB real: **103 passed, 5 skipped, 1 smoke esperado** (`working_tree`). `py_compile bot_Saldo.py supabase_client.py` PASS.
+- **CODE REVIEW**: PASS preliminar. Verificado: webhook intacto, sin secretos hardcodeados, fallback al label solo en lectura, DB idempotente bajo concurrencia 6 hilos → 1 fila.
 
 ---
 

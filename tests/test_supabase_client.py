@@ -228,3 +228,64 @@ def test_obtener_config_completo(monkeypatch):
     assert state == "x"
     assert gastos == ["ALQUILER"]
     assert ingresos == ["SUELDO"]
+
+
+# ---------------------------------------------------------------------------
+# FASE 5 - mensajes_procesados (Gmail)
+# ---------------------------------------------------------------------------
+
+def test_mensaje_ya_procesado(monkeypatch):
+    monkeypatch.setattr(
+        supabase_client, "_fetch_one", lambda sql, params=None: (1,)
+    )
+    assert supabase_client.mensaje_ya_procesado("abc123") is True
+    monkeypatch.setattr(
+        supabase_client, "_fetch_one", lambda sql, params=None: None
+    )
+    assert supabase_client.mensaje_ya_procesado("abc123") is False
+
+
+def test_mensaje_ya_procesado_vacio_no_consulta(monkeypatch):
+    llamado = []
+    monkeypatch.setattr(
+        supabase_client, "_fetch_one", lambda sql, params=None: llamado.append(1)
+    )
+    assert supabase_client.mensaje_ya_procesado("") is False
+    assert llamado == []
+
+
+def test_registrar_mensaje_procesado_mensaje_id_invalido():
+    with pytest.raises(supabase_client.SupabaseWriteError):
+        supabase_client.registrar_mensaje_procesado("   ")
+
+
+def test_registrar_mensaje_procesado_insertado(monkeypatch):
+    ejecutado = []
+
+    class Cur:
+        rowcount = 1
+
+        def execute(self, sql, params):
+            ejecutado.append((sql, params))
+
+    monkeypatch.setattr(
+        supabase_client, "_write_in_transaction", lambda fn: fn(Cur())
+    )
+    estado = supabase_client.registrar_mensaje_procesado(
+        "m1", "bna", "Resumen"
+    )
+    assert estado == "insertado"
+    assert ejecutado[0][1] == ("m1", "bna", "Resumen")
+
+
+def test_registrar_mensaje_procesado_existente(monkeypatch):
+    class Cur:
+        rowcount = 0
+
+        def execute(self, sql, params):
+            pass
+
+    monkeypatch.setattr(
+        supabase_client, "_write_in_transaction", lambda fn: fn(Cur())
+    )
+    assert supabase_client.registrar_mensaje_procesado("m1") == "existente"

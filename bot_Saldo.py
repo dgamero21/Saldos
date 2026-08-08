@@ -197,8 +197,10 @@ def obtener_reglas():
     return reglas_activas
 
 
-def buscar_mails_nuevos(remitente, asunto_contiene):
-    query = f"from:{remitente} -label:{LABEL_PROCESADO}"
+def buscar_mails_nuevos(remitente, asunto_contiene, excluir_label_procesado=False):
+    query = f"from:{remitente}"
+    if excluir_label_procesado:
+        query += f" -label:{LABEL_PROCESADO}"
     if asunto_contiene:
         query += f' subject:"{asunto_contiene}"'
     resultados = get_gmail_service().users().messages().list(userId="me", q=query).execute()
@@ -320,6 +322,36 @@ def marcar_procesado(mensaje_id, label_id):
     get_gmail_service().users().messages().modify(
         userId="me", id=mensaje_id, body={"addLabelIds": [label_id]}
     ).execute()
+
+
+def mensaje_tiene_label(mensaje_id, label_id):
+    if not label_id:
+        return False
+    msg = get_gmail_service().users().messages().get(
+        userId="me", id=mensaje_id, format="metadata"
+    ).execute()
+    return label_id in msg.get("labelIds", [])
+
+
+def mensaje_ya_procesado(mensaje_id, label_id):
+    ok, procesado = _leer_con_supabase(
+        lambda: supabase_client.mensaje_ya_procesado(mensaje_id),
+        f"mensaje procesado Gmail {mensaje_id}",
+    )
+    if ok:
+        return procesado
+    return mensaje_tiene_label(mensaje_id, label_id)
+
+
+def registrar_y_marcar_mensaje_procesado(mensaje_id, remitente, asunto, label_id):
+    supabase_client.registrar_mensaje_procesado(mensaje_id, remitente, asunto)
+    try:
+        marcar_procesado(mensaje_id, label_id)
+    except Exception as exc:
+        print(
+            f"[GMAIL LABEL ERROR] No se pudo etiquetar {mensaje_id}: {exc}. "
+            "Supabase ya registró el mensaje como procesado."
+        )
 
 
 # ---------- Normalización Numérica y de Fechas ----------
@@ -955,6 +987,7 @@ def revisar_mails():
     label_id = obtener_o_crear_label(LABEL_PROCESADO)
     reglas = obtener_reglas()
     total_procesados = 0
+    excluir_label_en_busqueda = not supabase_client.supabase_disponible()
 
     sh = get_gc().open_by_key(SHEET_ID)
     ws_consolidado = sh.worksheet(SHEET_NAME)
@@ -985,13 +1018,20 @@ def revisar_mails():
             tiene_adjunto = str(regla.get("Tiene_Adjunto", "NO")).strip().upper() == "SI"
             es_tarjeta = str(regla.get("Es_Tarjeta_Credito", "NO")).strip().upper() == "SI"
 
-            nuevos = buscar_mails_nuevos(remitente, asunto_contiene)
+            nuevos = buscar_mails_nuevos(
+                remitente,
+                asunto_contiene,
+                excluir_label_procesado=excluir_label_en_busqueda,
+            )
 
             if nuevos:
                 nuevos.reverse()
 
             for m in nuevos:
                 try:
+                    if mensaje_ya_procesado(m["id"], label_id):
+                        continue
+
                     asunto, fecha, cuerpo_texto, cuerpo_raw, pdf_filename, pdf_bytes = extraer_datos_mensaje_mime(m["id"])
                     link_drive = ""
                     fecha_mail_fmt = formatear_fecha_resumen(fecha)
@@ -1028,7 +1068,9 @@ def revisar_mails():
                             _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto, remitente)
 
                     if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
-                        marcar_procesado(m["id"], label_id)
+                        registrar_y_marcar_mensaje_procesado(
+                            m["id"], remitente, asunto, label_id
+                        )
                         continue
 
                     guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
@@ -1038,7 +1080,9 @@ def revisar_mails():
                         texto_telegram += f"\nPDF: {link_drive}"
                     enviar_telegram(texto_telegram)
                     
-                    marcar_procesado(m["id"], label_id)
+                    registrar_y_marcar_mensaje_procesado(
+                        m["id"], remitente, asunto, label_id
+                    )
                     total_procesados += 1
                     time.sleep(1)
                     
