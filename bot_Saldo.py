@@ -296,6 +296,23 @@ def subir_a_drive(nombre_archivo, pdf_bytes):
     return archivo.get("webViewLink")
 
 
+def subir_pdf(nombre_archivo, pdf_bytes, remitente):
+    """FASE 6: Storage privado como principal, Drive como fallback temporal.
+
+    Devuelve (link_guardado_en_db, link_para_telegram).
+    - Storage: guarda `storage://pdfs/<path>` en DB y signed URL en Telegram.
+    - Drive fallback: usa la misma URL para DB y Telegram.
+    - EPEC: no debe llamar a esta función (caller deja links vacíos).
+    """
+    try:
+        resultado = supabase_client.subir_pdf_storage(nombre_archivo, pdf_bytes, remitente)
+        return resultado["link_ref"], resultado["signed_url"]
+    except supabase_client.SupabaseStorageError as exc:
+        print(f"{exc}. Usando Google Drive como respaldo temporal.")
+        link_drive = subir_a_drive(nombre_archivo, pdf_bytes)
+        return link_drive, link_drive
+
+
 def formatear_fecha_resumen(fecha_rfc2822):
     try:
         dt = email.utils.parsedate_to_datetime(fecha_rfc2822)
@@ -949,10 +966,6 @@ def procesar_mensajes_telegram():
                 
                 pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
                 
-                link_drive = ""
-                if "epec.com.ar" not in remitente.lower():
-                    link_drive = subir_a_drive(file_name, pdf_sin_clave)
-                    
                 fecha_mail_fmt = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                 consumos, fecha_cierre, fecha_vencimiento, monto_total = extraer_consumos_pdf(
                     pdf_sin_clave, "", fecha_mail_fmt, regla
@@ -963,15 +976,22 @@ def procesar_mensajes_telegram():
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
                     continue
 
+                link_guardado = ""
+                link_telegram = ""
+                if "epec.com.ar" not in remitente.lower():
+                    link_guardado, link_telegram = subir_pdf(
+                        file_name, pdf_sin_clave, remitente
+                    )
+
                 if es_tarjeta and consumos:
                     ws_consumos = sh.worksheet("Consumos")
                     guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente)
                     
-                guardar_en_sheet(ws_consolidado, datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_drive)
+                guardar_en_sheet(ws_consolidado, datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_guardado)
                 
                 confirmacion = f"✅ ¡Factura procesada con éxito desde Telegram!\n🏢 Empresa: {remitente}\n💵 Monto: ${monto_total:,.2f}\n📅 Vencimiento: {fecha_vencimiento}"
-                if link_drive:
-                    confirmacion += f"\n📂 Archivo: {link_drive}"
+                if link_telegram:
+                    confirmacion += f"\n📂 Archivo: {link_telegram}"
                 enviar_telegram(confirmacion)
                 
             except Exception as e:
@@ -1033,10 +1053,12 @@ def revisar_mails():
                         continue
 
                     asunto, fecha, cuerpo_texto, cuerpo_raw, pdf_filename, pdf_bytes = extraer_datos_mensaje_mime(m["id"])
-                    link_drive = ""
+                    link_guardado = ""
+                    link_telegram = ""
                     fecha_mail_fmt = formatear_fecha_resumen(fecha)
                     monto_total = 0.0
                     fecha_vencimiento = ""
+                    pdf_sin_clave = None
 
                     if tiene_adjunto:
                         if not pdf_bytes:
@@ -1045,11 +1067,6 @@ def revisar_mails():
                         if pdf_bytes:
                             try:
                                 pdf_sin_clave = quitar_clave_pdf(pdf_bytes, clave) if clave else pdf_bytes
-                                
-                                if "epec.com.ar" not in remitente.lower():
-                                    link_drive = subir_a_drive(pdf_filename or "Factura.pdf", pdf_sin_clave)
-                                else:
-                                    link_drive = ""
 
                                 consumos, _, fecha_vencimiento, monto_total = extraer_consumos_pdf(
                                     pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
@@ -1073,11 +1090,16 @@ def revisar_mails():
                         )
                         continue
 
-                    guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_drive)
+                    if pdf_sin_clave and "epec.com.ar" not in remitente.lower():
+                        link_guardado, link_telegram = subir_pdf(
+                            pdf_filename or "Factura.pdf", pdf_sin_clave, remitente
+                        )
+
+                    guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_guardado)
                     
                     texto_telegram = f"📩 Resumen Procesado\nDe: {remitente}\nAsunto: {asunto}\nMonto: ${monto_total:,.2f}\nVencimiento: {fecha_vencimiento}"
-                    if link_drive:
-                        texto_telegram += f"\nPDF: {link_drive}"
+                    if link_telegram:
+                        texto_telegram += f"\nPDF: {link_telegram}"
                     enviar_telegram(texto_telegram)
                     
                     registrar_y_marcar_mensaje_procesado(

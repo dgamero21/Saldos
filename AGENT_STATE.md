@@ -9,7 +9,7 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 6 — Drive -> Supabase Storage (ANÁLISIS)
+FASE ACTUAL:        FASE 7 — Webhook -> Supabase (ANÁLISIS)
 ESTADO:             EN PROGRESO
 AGENTE ACTUAL:      ANALISTA
 ```
@@ -24,29 +24,68 @@ AGENTE ACTUAL:      ANALISTA
   referencias a Drive hasta validar FASE 6.
 
 **CAMBIOS REALIZADOS:**
-- GATE FASE 5 aprobado por el usuario; pendiente commitear el baseline y luego
-  ejecutar nuevamente la suite completa antes de avanzar con la implementación
-  de FASE 6.
+- `supabase_client.py` — MODIFICADO: capa de Storage privado:
+  - `supabase_storage_disponible()` / `_storage_config()` / headers de REST.
+  - `subir_pdf_storage()` → upload a bucket privado `pdfs`, validación previa
+    (PDF real por magic bytes, <= 10 MB), `x-upsert=true`, path estable por
+    SHA256 y remitente.
+  - `crear_signed_url_pdf()` → signed URL temporal para Telegram.
+  - `link_drive` pasa a aceptar referencia estable `storage://pdfs/<path>`.
+- `bot_Saldo.py` — MODIFICADO: migración progresiva Drive -> Storage:
+  - nuevo helper `subir_pdf()` → Storage como principal, Drive como fallback
+    temporal y explícito.
+  - `revisar_mails()` ya no sube el PDF antes del dedup; primero parsea y
+    decide, luego sube solo si el mail no es duplicado.
+  - la rama Telegram PDF manual también usa `subir_pdf()`.
+  - EPEC conserva el caso especial: no almacena archivo y deja link vacío.
+  - Telegram recibe signed URL; `consolidado.link_drive` guarda una referencia
+    estable (`storage://pdfs/...`) cuando se usa Storage.
+- `tests/test_fase6_storage.py` — NUEVO (unit: upload helper, signed URL,
+  fallback Drive, flujo Gmail, flujo Telegram manual, EPEC).
+- `tests/test_fase6_storage_integracion.py` — NUEVO (integración opcional con
+  Storage real; hoy queda SKIP si faltan `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`).
+- `tests/test_smoke.py` — ACTUALIZADO: blob hash de `bot_Saldo.py` al estado
+  FASE 6 en desarrollo.
 
 **TESTS EJECUTADOS:**
-- FASE 5 antes del commit baseline: `pytest tests/` → 103 passed, 5 skipped,
-  1 failed (solo smoke de working tree esperado).
+- Post-commit FASE 5: `pytest tests/` → **104 passed, 5 skipped** (baseline
+  limpio confirmado antes de arrancar FASE 6).
+- Suite FASE 6 específica: `test_fase6_storage.py` → **8/8 PASS**;
+  `test_fase6_storage_integracion.py` → **1 skipped** (faltan credenciales REST
+  de Storage en este entorno local).
+- Suite completa con DB real: `pytest tests/` → **111 passed, 6 skipped,
+  1 failed** (solo smoke de working tree esperado mientras FASE 6 siga sin
+  commitear/gate).
+- `py_compile bot_Saldo.py supabase_client.py` PASS.
 
 **TESTS FALLIDOS:**
 - Ninguno confirmado post-commit todavía. Pendiente rerun completo tras cerrar el
   baseline de FASE 5.
 
 **PROBLEMAS ABIERTOS:**
+- El workflow de GitHub Actions aún no inyecta `SUPABASE_URL` ni
+  `SUPABASE_SERVICE_ROLE_KEY`; por eso Drive sigue como fallback temporal hasta
+  FASE 8 (secrets/deploy).
+- `consolidado.link_drive` mezcla histórico Drive URL con nueva referencia
+  `storage://pdfs/...`; es intencional para transición sin schema nuevo.
 - El label Gmail sigue existiendo como respaldo/observabilidad; su retiro total
   o simplificación se decide más adelante si ya no aporta valor operativo.
-- Bucket `pdfs` PRIVADO / signed URLs: decisión FASE 6.
-- Drive/Telegram/webhook/secrets: FASE 6-8.
+- Webhook y secrets siguen pendientes para FASE 7/8.
+
+**VALIDACIÓN PENDIENTE E2E (FASE 8/9):**
+- La integración real de Storage (upload + signed URL contra el bucket privado)
+  NO bloquea FASE 6, pero queda pendiente de ejecución en un entorno con
+  `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. Debe validarse explícitamente en
+  deploy durante FASE 8/9.
 
 **RIESGOS:**
+- Mientras el fallback a Drive siga activo, una falla de Storage puede dejar
+  links nuevos en Drive y referencias más viejas en `storage://...`; es el costo
+  temporal de la migración progresiva sin romper producción antes de FASE 8.
+- Las signed URLs son temporales por diseño; la referencia persistida permite
+  re-firmar luego, pero la URL enviada por Telegram expira.
 - Si Gmail etiqueta falla pero Supabase registra bien, el bot no reprocesa, pero
   el label visible en la casilla puede quedar desincronizado.
-- Si Supabase no está disponible, el fallback al label Gmail evita reprocesar,
-  pero la fuente principal vuelve temporalmente al mecanismo anterior.
 
 **DECISIONES:**
 - `mensajes_procesados` es la fuente principal de idempotencia Gmail.
@@ -54,20 +93,30 @@ AGENTE ACTUAL:      ANALISTA
   disponible; con Supabase disponible se consulta todo y se decide por DB.
 - Registrar el `mensaje_id` ocurre también cuando el resumen resulta duplicado
   por lógica de negocio, para no volver a recorrer ese mismo mail.
+- Bucket `pdfs` permanece PRIVADO; no se convierte en público.
+- `consolidado.link_drive` guarda una referencia estable `storage://pdfs/<path>`
+  cuando el archivo vive en Storage; Telegram usa signed URL temporal.
+- EPEC mantiene link vacío y no sube archivo.
+- Hasta FASE 8, Drive se conserva como fallback explícito para no romper el
+  workflow actual mientras faltan las credenciales REST de Storage.
 
-**CRITERIO DE PASS (FASE 5):**
-- [x] `mensaje_id` se registra con UPSERT idempotente en `mensajes_procesados`
-- [x] `mensaje_ya_procesado` consulta Supabase primero
-- [x] Fallback explícito al label Gmail si la lectura Supabase falla
-- [x] `revisar_mails()` evita volver a extraer MIME/PDF de un mail ya registrado
-- [x] Mails duplicados de negocio también quedan marcados por `mensaje_id`
-- [x] Concurrencia: N registros simultáneos del mismo `mensaje_id` → 1 fila
-- [x] Sin tocar webhook; sin secretos hardcodeados
-- [x] Suite completa con DB real: 103 passed / 5 skipped / 1 smoke esperado
+**CRITERIO DE PASS (FASE 6):**
+- [x] `subir_a_drive()` relevado y reemplazado por flujo Storage-first
+- [x] identificados todos los usos del link: Gmail, Telegram manual y
+      `consolidado.link_drive`
+- [x] bucket privado preservado; signed URLs temporales definidas
+- [x] EPEC mantiene excepción sin almacenamiento
+- [x] compatibilidad con `consolidado` preservada (ref estable `storage://...`)
+- [x] no se toca `consumos` (no guarda links)
+- [x] manejo de errores: fallback explícito a Drive mientras faltan secrets
+- [x] upload solo después del dedup para evitar archivos huérfanos por duplicado
+- [x] tests unitarios de flujo y helper PASS; integración Storage real preparada
+- [x] suite completa con DB real: 111 passed / 6 skipped / 1 smoke esperado
 
 **PRÓXIMA ACCIÓN:**
-- Commitear baseline de FASE 5, verificar suite 100% verde y ejecutar FASE 6
-  completa (análisis -> diseño -> implementación -> tests -> code review).
+- GATE FASE 6 aprobado por el usuario. Commitear baseline, rerun completo y
+  arrancar FASE 7 (Webhook -> Supabase), separando migración de persistencia de
+  cualquier mejora de seguridad del secret token.
 
 ---
 
@@ -115,12 +164,21 @@ AGENTE ACTUAL:      ANALISTA
 - **CODE REVIEW**: PASS. Verificado: sin doble escritura (ws ignorado), secretos por env, webhook intacto, GOOGLE_*/SHEET_ID intactos, residuos 0 en DB.
 - **GATE**: APROBADO por el usuario el 2026-08-08 → se procede a FASE 5. Baseline commiteado (`532e762` + ajuste smoke) y suite 100% verde: **90 passed, 5 skipped**. El guard de head se relajó a "descendiente del baseline" (`262a215`) porque todo commit legítimo mueve HEAD (la igualdad estricta rompía tras cada commit).
 
-### FASE 5 — Gmail (mensajes_procesados) — **IMPLEMENTADO + VALIDADO (PENDIENTE GATE) 2026-08-08**
+### FASE 5 — Gmail (mensajes_procesados) — **PASS 2026-08-08**
 - **ANALISTA**: relevado el flujo actual de Gmail (`buscar_mails_nuevos`, `extraer_datos_mensaje_mime`, `marcar_procesado`, `revisar_mails`); identificado que la idempotencia dependía del label `Procesado-Resumen` y que el schema ya disponía de `mensajes_procesados (UNIQUE mensaje_id)` para migrarla.
 - **ARQUITECTO**: Supabase pasa a ser la fuente principal de idempotencia por `mensaje_id`; el label Gmail queda como respaldo / señal visual. Con Supabase disponible, la búsqueda NO excluye por label y el skip se decide por DB; si la lectura falla, fallback explícito al label. La escritura del registro del mensaje es obligatoria y sin fallback silencioso.
 - **IMPLEMENTADOR**: añadidos `mensaje_ya_procesado()` y `registrar_mensaje_procesado()` en `supabase_client.py`; en `bot_Saldo.py` se agregaron `mensaje_tiene_label()`, `mensaje_ya_procesado()`, `registrar_y_marcar_mensaje_procesado()` y la integración en `revisar_mails()` para saltar mails ya procesados antes de extraer MIME/PDF y registrar también los duplicados de negocio.
 - **TESTER**: `test_fase5_gmail.py` (unit) + `test_fase5_integracion.py` (DB real) + ampliación de `test_supabase_client.py` → **38/38 PASS**; suite completa con DB real: **103 passed, 5 skipped, 1 smoke esperado** (`working_tree`). `py_compile bot_Saldo.py supabase_client.py` PASS.
 - **CODE REVIEW**: PASS preliminar. Verificado: webhook intacto, sin secretos hardcodeados, fallback al label solo en lectura, DB idempotente bajo concurrencia 6 hilos → 1 fila.
+- **GATE**: APROBADO por el usuario el 2026-08-08. Baseline commiteado (`1a4c3f1`) y suite post-commit: **104 passed, 5 skipped**; working tree limpio confirmado antes de FASE 6.
+
+### FASE 6 — Drive -> Supabase Storage — **PASS 2026-08-08**
+- **ANALISTA**: relevado `subir_a_drive()` y sus 2 usos reales (Gmail + Telegram PDF manual); identificado que `consolidado.link_drive` es el único campo persistido con link y que `consumos` no guarda PDFs. Confirmado el caso especial EPEC: no almacenar archivo, link vacío.
+- **ARQUITECTO**: diseño Storage-first con bucket `pdfs` PRIVADO y signed URLs temporales para Telegram; persistencia estable en `consolidado.link_drive` como `storage://pdfs/<path>`; Drive queda como fallback explícito y temporal mientras el workflow aún no expone `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (FASE 8). Upload movido después del dedup para evitar huérfanos por duplicado.
+- **IMPLEMENTADOR**: añadidos helpers de Storage REST en `supabase_client.py` (`subir_pdf_storage`, `crear_signed_url_pdf`, parsing de refs `storage://...`); añadido `subir_pdf()` en `bot_Saldo.py`; migradas las ramas Gmail y Telegram manual a Storage-first; EPEC preservado sin almacenamiento.
+- **TESTER**: `test_fase6_storage.py` **8/8 PASS**; `test_fase6_storage_integracion.py` preparado y **1 skip** por falta de credenciales REST en este entorno local; suite completa con DB real: **111 passed, 6 skipped, 1 smoke esperado** (`working_tree`).
+- **CODE REVIEW**: PASS preliminar. Verificado: bucket sigue privado, webhook intacto, sin secretos hardcodeados, compatibilidad transicional con `consolidado`, Drive solo como respaldo temporal explícito.
+- **GATE**: APROBADO por el usuario el 2026-08-08. Queda documentado que la validación E2E real de Storage (upload + signed URL con `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`) NO bloquea FASE 6 pero debe ejecutarse explícitamente en FASE 8/9.
 
 ---
 

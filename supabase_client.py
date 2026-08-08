@@ -1,4 +1,4 @@
-"""Capa de acceso a datos Supabase (FASE 3 + FASE 4).
+"""Capa de acceso a datos Supabase (FASE 3 + FASE 4 + FASE 6).
 
 Arquitectura:
     bot_Saldo.py
@@ -40,10 +40,12 @@ bot_Saldo.py decide el fallback a Sheets y avisa "[SUPABASE READ ERROR]".
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 
 # ---------------------------------------------------------------------------
 # Errores explícitos
@@ -65,6 +67,10 @@ class SupabaseWriteError(SupabaseError):
     """Fallo de conexión, escritura o formato de datos al escribir."""
 
 
+class SupabaseStorageError(SupabaseError):
+    """Fallo de configuración, upload o signed URL en Supabase Storage."""
+
+
 # ---------------------------------------------------------------------------
 # Conexión (lazy, desde entorno; nunca hardcodeada)
 # ---------------------------------------------------------------------------
@@ -73,6 +79,8 @@ _POOLER_HOST = "aws-0-sa-east-1.pooler.supabase.com"
 _POOLER_PORT = 6543
 _POOLER_DB = "postgres"
 _POOLER_USER = "postgres.zargsvnssplbwkkixjos"
+_STORAGE_BUCKET = "pdfs"
+_SIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _build_dsn() -> str:
@@ -154,6 +162,65 @@ def _fetch_one(sql: str, params: tuple | None = None):
 def supabase_disponible() -> bool:
     """True si hay credenciales configuradas en el entorno."""
     return bool(os.environ.get("SUPABASE_DB_URL") or os.environ.get("SUPABASE_DBPW"))
+
+
+def supabase_storage_disponible() -> bool:
+    return bool(
+        os.environ.get("SUPABASE_URL", "").strip()
+        and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    )
+
+
+def _storage_config() -> tuple[str, str]:
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not url or not key:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] faltan SUPABASE_URL o "
+            "SUPABASE_SERVICE_ROLE_KEY en el entorno"
+        )
+    return url, key
+
+
+def _storage_headers(content_type: str | None = None) -> dict[str, str]:
+    _, key = _storage_config()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def _storage_slug(texto: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", str(texto or "").strip().lower())
+    return s.strip("-") or "sin-remitente"
+
+
+def _storage_path(remitente: str, pdf_bytes: bytes) -> str:
+    digest = hashlib.sha256(pdf_bytes).hexdigest()
+    return f"resumenes/{_storage_slug(remitente)}/{digest}.pdf"
+
+
+def _storage_link_ref(path: str) -> str:
+    return f"storage://{_STORAGE_BUCKET}/{path}"
+
+
+def _storage_quote_path(path: str) -> str:
+    return "/".join(quote(part, safe="") for part in path.split("/"))
+
+
+def es_link_storage(link: str) -> bool:
+    return str(link or "").startswith(f"storage://{_STORAGE_BUCKET}/")
+
+
+def storage_path_desde_link(link: str) -> str:
+    prefijo = f"storage://{_STORAGE_BUCKET}/"
+    valor = str(link or "")
+    if valor.startswith(prefijo):
+        return valor[len(prefijo):]
+    return valor
 
 
 # ---------------------------------------------------------------------------
@@ -633,3 +700,89 @@ def registrar_mensaje_procesado(mensaje_id, remitente="", asunto="") -> str:
         return "insertado" if cur.rowcount == 1 else "existente"
 
     return _write_in_transaction(_insertar)
+
+
+# ---------------------------------------------------------------------------
+# FASE 6 — Storage privado (bucket pdfs)
+#
+# Persistencia estable: consolidado.link_drive guarda una referencia interna
+# 'storage://pdfs/<path>' para poder re-firmar el objeto a futuro.
+# Entrega inmediata: Telegram recibe una signed URL temporal.
+# Mientras FASE 6/8 no retire Google Drive del todo, el bot puede usar Drive
+# como fallback explícito si faltan credenciales de Storage o el upload falla.
+# ---------------------------------------------------------------------------
+
+def crear_signed_url_pdf(link_o_path: str, expires_in: int = _SIGNED_URL_TTL_SECONDS) -> str:
+    import requests
+
+    path = storage_path_desde_link(link_o_path)
+    if not path:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] path vacío al crear signed URL"
+        )
+    url_base, _ = _storage_config()
+    response = requests.post(
+        f"{url_base}/storage/v1/object/sign/{_STORAGE_BUCKET}/{_storage_quote_path(path)}",
+        headers=_storage_headers("application/json"),
+        json={"expiresIn": int(expires_in)},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] fallo al firmar URL: "
+            f"HTTP {response.status_code} {response.text[:300]}"
+        )
+    data = response.json()
+    signed = data.get("signedURL") or data.get("signedUrl") or data.get("signed_url")
+    if not signed:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] respuesta sin signedURL"
+        )
+    if signed.startswith("http://") or signed.startswith("https://"):
+        return signed
+    return f"{url_base}/storage/v1{signed}"
+
+
+def subir_pdf_storage(nombre_archivo: str, pdf_bytes: bytes, remitente: str) -> dict[str, str]:
+    import requests
+
+    if not supabase_storage_disponible():
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] Supabase Storage no configurado"
+        )
+    if not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] pdf_bytes vacío o inválido"
+        )
+    if len(pdf_bytes) > 10 * 1024 * 1024:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] PDF excede el límite de 10 MB"
+        )
+    if bytes(pdf_bytes[:4]) != b"%PDF":
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] el archivo no parece ser un PDF válido"
+        )
+
+    path = _storage_path(remitente, bytes(pdf_bytes))
+    url_base, _ = _storage_config()
+    response = requests.post(
+        f"{url_base}/storage/v1/object/{_STORAGE_BUCKET}/{_storage_quote_path(path)}",
+        headers={
+            **_storage_headers("application/pdf"),
+            "x-upsert": "true",
+        },
+        data=bytes(pdf_bytes),
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise SupabaseStorageError(
+            "[SUPABASE STORAGE ERROR] fallo al subir PDF a Storage: "
+            f"HTTP {response.status_code} {response.text[:300]}"
+        )
+    return {
+        "bucket": _STORAGE_BUCKET,
+        "path": path,
+        "link_ref": _storage_link_ref(path),
+        "signed_url": crear_signed_url_pdf(path),
+        "nombre_archivo": str(nombre_archivo or "Factura.pdf").strip() or "Factura.pdf",
+    }
