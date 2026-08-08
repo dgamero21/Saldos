@@ -5,7 +5,14 @@ export default async function handler(req, res) {
 
   const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
   const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+  const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+  // FASE 7: NO retirar todavía estas variables de producción.
   const SHEET_ID = process.env.SHEET_ID;
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+  const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
   // Auxiliar para enviar mensaje a Telegram
   const sendTelegram = async (text, replyMarkup = null) => {
@@ -37,31 +44,92 @@ export default async function handler(req, res) {
     }
   };
 
-  // Auxiliar para obtener Google Access Token
-  const getGoogleAccessToken = async () => {
-    const resToken = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID || "",
-        client_secret: process.env.GOOGLE_CLIENT_SECRET || "",
-        refresh_token: process.env.GOOGLE_REFRESH_TOKEN || "",
-        grant_type: "refresh_token"
-      })
-    });
-    const dataToken = await resToken.json();
-    if (!dataToken.access_token) {
-      throw new Error(`No se pudo obtener token de Google: ${JSON.stringify(dataToken)}`);
+  const ensureSupabase = () => {
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error('Supabase no configurado en Vercel (faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY).');
     }
-    return dataToken.access_token;
   };
 
-  // Auxiliar para consultar datos de cualquier pestaña de Google Sheets
-  const fetchSheetValues = async (accessToken, range) => {
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    const data = await res.json();
-    return data.values || [];
+  const supabaseFetch = async (path, options = {}) => {
+    ensureSupabase();
+    const headers = {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      ...(options.headers || {})
+    };
+    const response = await fetch(`${SUPABASE_URL}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body
+    });
+    const text = await response.text();
+    const isJson = (response.headers.get('content-type') || '').includes('application/json');
+    const data = text ? (isJson ? JSON.parse(text) : text) : null;
+    if (!response.ok) {
+      const detail = typeof data === 'string' ? data : JSON.stringify(data);
+      throw new Error(`Supabase HTTP ${response.status}: ${detail}`);
+    }
+    return data;
+  };
+
+  const supabaseQuery = async (table, query = '') => {
+    return await supabaseFetch(`/rest/v1/${table}${query}`, {
+      headers: { Accept: 'application/json' }
+    }) || [];
+  };
+
+  const supabaseInsert = async (table, rows, { onConflict = '' } = {}) => {
+    const qs = onConflict ? `?on_conflict=${encodeURIComponent(onConflict)}` : '';
+    return await supabaseFetch(`/rest/v1/${table}${qs}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=ignore-duplicates,return=minimal'
+      },
+      body: JSON.stringify(Array.isArray(rows) ? rows : [rows])
+    });
+  };
+
+  const toArDate = (value) => {
+    if (!value) return '';
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [y, m, d] = value.split('-');
+      return `${d}/${m}/${y}`;
+    }
+    return value;
+  };
+
+  const monthYearAr = (value) => {
+    const ar = toArDate(value);
+    const m = ar.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    return m ? `${parseInt(m[2], 10)}/${m[3]}` : '';
+  };
+
+  const todayAr = () => new Date().toLocaleDateString('es-AR', {
+    timeZone: 'America/Argentina/Cordoba',
+    day: '2-digit', month: '2-digit', year: 'numeric'
+  });
+
+  const todayIso = () => {
+    const [d, m, y] = todayAr().split('/');
+    return `${y}-${m}-${d}`;
+  };
+
+  const obtenerCategorias = async () => {
+    const rows = await supabaseQuery(
+      'categorias_fijas',
+      '?select=es_ingreso,tipo&order=id.asc'
+    );
+    const tiposGastos = [];
+    const tiposIngresos = [];
+    rows.forEach((r) => {
+      const tipo = (r.tipo || '').trim();
+      if (!tipo) return;
+      if (r.es_ingreso) tiposIngresos.push(tipo);
+      else tiposGastos.push(tipo);
+    });
+    return { tiposGastos, tiposIngresos };
   };
 
   // Formatear números a Moneda Argentina
@@ -72,6 +140,10 @@ export default async function handler(req, res) {
     if (!update || !update.update_id) {
       return res.status(400).json({ error: 'Payload de Telegram no válido.' });
     }
+    // FASE 7: se migra Sheets -> Supabase, pero NO se cambia todavía la
+    // estrategia de deduplicación por update_id/last_update_id. El webhook
+    // actual valida que exista update_id, pero no lo persiste ni lo usa para
+    // descartar retries; esa decisión queda pendiente para una fase posterior.
 
     // ----- CASO A: Documento PDF recibido -> Derivar a GitHub Actions -----
     const message = update.message;
@@ -129,16 +201,7 @@ export default async function handler(req, res) {
           const montoFinal = Math.round(numVal * factor * 100) / 100;
           
           try {
-            const accessToken = await getGoogleAccessToken();
-            const rows = await fetchSheetValues(accessToken, "Config!E2:J100");
-            
-            const tiposGastos = [];
-            const tiposIngresos = [];
-
-            rows.forEach(r => {
-              if (r[0] && r[0].trim()) tiposGastos.push(r[0].trim());
-              if (r[4] && r[4].trim()) tiposIngresos.push(r[4].trim());
-            });
+            const { tiposGastos, tiposIngresos } = await obtenerCategorias();
 
             const categorias = esIngreso ? tiposIngresos : tiposGastos;
             const prefix = esIngreso ? "INGRESO" : "MANUAL";
@@ -160,18 +223,20 @@ export default async function handler(req, res) {
             await sendTelegram(`${titulo} ${fmt(montoFinal)}?`, { inline_keyboard: keyboard });
             return res.status(200).json({ message: 'Teclado enviado en tiempo real.' });
 
-          } catch (errSheet) {
-            console.error("[ERROR buscando en Sheets]:", errSheet);
-            await sendTelegram(`❌ Error al conectar con Google Sheets desde Vercel: ${errSheet.message}`);
-            return res.status(500).json({ error: errSheet.message });
+          } catch (errSupabase) {
+            console.error("[ERROR buscando categorías en Supabase]:", errSupabase);
+            await sendTelegram(`❌ Error al conectar con Supabase desde Vercel: ${errSupabase.message}`);
+            return res.status(500).json({ error: errSupabase.message });
           }
         }
 
         // B.2. CONSULTA: Vencimientos / Facturas Pendientes
         if (textoLower.includes("vencimiento") || textoLower.includes("debo") || textoLower.includes("proximo") || textoLower.includes("factura")) {
           try {
-            const accessToken = await getGoogleAccessToken();
-            const rows = await fetchSheetValues(accessToken, "Consolidado!A2:F100");
+            const rows = await supabaseQuery(
+              'consolidado',
+              '?select=remitente,asunto,monto_total,fecha_vencimiento&order=id.asc&limit=100'
+            );
             
             if (rows.length === 0) {
               await sendTelegram("📋 No hay resúmenes ni facturas registradas en la pestaña Consolidado.");
@@ -182,9 +247,9 @@ export default async function handler(req, res) {
             let totalFacturas = 0;
 
             rows.forEach(r => {
-              const emisor = r[1] || r[2] || "Factura";
-              const monto = parseFloat(r[3]) || 0;
-              const vto = r[4] || "Sin fecha";
+              const emisor = r.remitente || r.asunto || "Factura";
+              const monto = parseFloat(r.monto_total) || 0;
+              const vto = toArDate(r.fecha_vencimiento) || "Sin fecha";
               if (monto > 0) {
                 msgs.push(`• **${emisor}**: ${fmt(monto)} (Vence: ${vto})`);
                 totalFacturas += monto;
@@ -203,25 +268,28 @@ export default async function handler(req, res) {
         // B.3. CONSULTA: Balance / Resumen Mensual
         if (textoLower.includes("balance") || textoLower.includes("resumen") || textoLower.includes("mes")) {
           try {
-            const accessToken = await getGoogleAccessToken();
             const hoy = new Date();
             const mesActual = hoy.toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", month: '2-digit', year: 'numeric' });
 
-            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
-            const rowsIngresos = await fetchSheetValues(accessToken, "Ingresos!A2:E200");
+            const rowsConsumos = await supabaseQuery(
+              'consumos',
+              '?select=fecha_consumo,pesos&order=id.asc&limit=500'
+            );
+            const rowsIngresos = await supabaseQuery(
+              'ingresos',
+              '?select=fecha,monto&order=id.asc&limit=200'
+            );
 
             let totalGastos = 0;
             rowsConsumos.forEach(r => {
-              const fecha = r[0] || "";
-              const monto = parseFloat(r[5]) || 0;
-              if (fecha.includes(mesActual)) totalGastos += monto;
+              const monto = parseFloat(r.pesos) || 0;
+              if (monthYearAr(r.fecha_consumo) === mesActual) totalGastos += monto;
             });
 
             let totalIngresos = 0;
             rowsIngresos.forEach(r => {
-              const fecha = r[0] || "";
-              const monto = parseFloat(r[2]) || 0;
-              if (fecha.includes(mesActual)) totalIngresos += monto;
+              const monto = parseFloat(r.monto) || 0;
+              if (monthYearAr(r.fecha) === mesActual) totalIngresos += monto;
             });
 
             const neto = totalIngresos - totalGastos;
@@ -246,17 +314,19 @@ export default async function handler(req, res) {
         // B.4. CONSULTA: Cuotas Activas
         if (textoLower.includes("cuota") || textoLower.includes("deuda")) {
           try {
-            const accessToken = await getGoogleAccessToken();
-            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
+            const rowsConsumos = await supabaseQuery(
+              'consumos',
+              '?select=detalle,cuota_actual,cuota_total,pesos&order=id.asc&limit=500'
+            );
 
             let msgs = ["💳 **Compras Activas en Cuotas:**\n"];
             let cuotasEncontradas = 0;
 
             rowsConsumos.forEach(r => {
-              const detalle = r[2] || "Compra";
-              const cAct = parseInt(r[3]) || 1;
-              const cTot = parseInt(r[4]) || 1;
-              const monto = parseFloat(r[5]) || 0;
+              const detalle = r.detalle || "Compra";
+              const cAct = parseInt(r.cuota_actual) || 1;
+              const cTot = parseInt(r.cuota_total) || 1;
+              const monto = parseFloat(r.pesos) || 0;
 
               if (cTot > 1 && cAct <= cTot) {
                 msgs.push(`• **${detalle}**: Cuota ${cAct} de ${cTot} (${fmt(monto)}/mes)`);
@@ -280,20 +350,21 @@ export default async function handler(req, res) {
         if (textoLower.startsWith("gasto ") || textoLower.startsWith("gastos ")) {
           try {
             const catBuscada = textoLower.replace(/gastos|gasto/g, "").trim();
-            const accessToken = await getGoogleAccessToken();
             const hoy = new Date();
             const mesActual = hoy.toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", month: '2-digit', year: 'numeric' });
 
-            const rowsConsumos = await fetchSheetValues(accessToken, "Consumos!A2:K500");
+            const rowsConsumos = await supabaseQuery(
+              'consumos',
+              '?select=fecha_consumo,detalle,pesos&order=id.asc&limit=500'
+            );
             let totalCat = 0;
             let items = 0;
 
             rowsConsumos.forEach(r => {
-              const fecha = r[0] || "";
-              const detalle = (r[2] || "").toLowerCase();
-              const monto = parseFloat(r[5]) || 0;
+              const detalle = (r.detalle || '').toLowerCase();
+              const monto = parseFloat(r.pesos) || 0;
 
-              if (fecha.includes(mesActual) && detalle.includes(catBuscada)) {
+              if (monthYearAr(r.fecha_consumo) === mesActual && detalle.includes(catBuscada)) {
                 totalCat += monto;
                 items++;
               }
@@ -322,23 +393,27 @@ export default async function handler(req, res) {
           return res.status(200).json({ message: 'Operación cancelada.' });
         }
 
-        const hoy = new Date().toLocaleDateString("es-AR", { timeZone: "America/Argentina/Cordoba", day: '2-digit', month: '2-digit', year: 'numeric' });
+        const hoy = todayAr();
+        const hoyIsoVal = todayIso();
 
         if (dataSel.startsWith("MANUAL|")) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
 
-          const accessToken = await getGoogleAccessToken();
-          const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Consumos!A1:append?valueInputOption=USER_ENTERED`;
-          
-          await fetch(appendUrl, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              values: [[
-                hoy, "Telegram", catSel, 1, 1, montoVal, 0.0, "", "", "Manual Telegram", `${hoy}|Telegram|${catSel}|1|Manual Telegram`
-              ]]
-            })
+          await supabaseInsert('consumos', {
+            fecha_consumo: hoyIsoVal,
+            comprobante: 'Telegram',
+            detalle: catSel,
+            cuota_actual: 1,
+            cuota_total: 1,
+            pesos: montoVal,
+            dolar: 0.0,
+            fecha_cierre: null,
+            fecha_vencimiento: null,
+            remitente: 'Manual Telegram',
+            id_consumo: `${hoy}|Telegram|${catSel}|1|Manual Telegram`
+          }, {
+            onConflict: 'fecha_consumo,comprobante,detalle,cuota_total,remitente'
           });
 
           await editTelegram(messageId, `✅ ¡Gasto de ${fmt(montoVal)} registrado con éxito en '${catSel}'!`);
@@ -348,17 +423,14 @@ export default async function handler(req, res) {
           const [, montoStr, catSel] = dataSel.split("|");
           const montoVal = parseFloat(montoStr);
 
-          const accessToken = await getGoogleAccessToken();
-          const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Ingresos!A1:append?valueInputOption=USER_ENTERED`;
-          
-          await fetch(appendUrl, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              values: [[
-                hoy, catSel, montoVal, "Manual Telegram", `${hoy}|Ingreso|${catSel}|Manual Telegram`
-              ]]
-            })
+          await supabaseInsert('ingresos', {
+            fecha: hoyIsoVal,
+            tipo: catSel,
+            monto: montoVal,
+            origen: 'Manual Telegram',
+            id_ingreso: `${hoy}|Ingreso|${catSel}|Manual Telegram`
+          }, {
+            onConflict: 'fecha,tipo,origen'
           });
 
           await editTelegram(messageId, `💰 ¡Ingreso de ${fmt(montoVal)} registrado con éxito en '${catSel}'!`);

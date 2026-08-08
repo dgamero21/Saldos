@@ -48,9 +48,9 @@ def test_bot_y_webhook_presentes():
 
 def test_blobs_de_git_coinciden_con_working_tree(repo_root):
     expected = {
-        # FASE 6 baseline en desarrollo (Drive -> Supabase Storage).
+        # FASE 7 baseline en desarrollo (Webhook -> Supabase).
         "bot_Saldo.py": "e2d820c7adb9669a66f0231a6a74d454344f6518",
-        "api/webhook.js": "003091bb9ef385ace7c4d84b3c145ce6c7d1b3bd",
+        "api/webhook.js": "67540e1ec2ea616de781b234b3e275de8ba427e9",
     }
     for path, blob_hash in expected.items():
         result = subprocess.run(

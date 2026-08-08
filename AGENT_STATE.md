@@ -9,19 +9,80 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 7 — Webhook -> Supabase (ANÁLISIS)
-ESTADO:             EN PROGRESO
-AGENTE ACTUAL:      ANALISTA
+FASE ACTUAL:        FASE 7 — Webhook -> Supabase (IMPLEMENTADO + VALIDADO)
+ESTADO:             PENDIENTE COMMIT BASELINE — TESTER + CODE REVIEW PASS
+AGENTE ACTUAL:      (auto-avance a FASE 8)
 ```
 
+**PROTOCOLO DE LOOP (actualizado 2026-08-08):**
+- Sin aprobación manual entre fases. Avanzar automáticamente tras
+  TESTER=PASS + CODE REVIEW=PASS.
+- Detenerse solo para: operaciones irreversibles sobre producción,
+  modificación/eliminación de datos, secretos faltantes, decisiones
+  arquitectónicas con múltiples alternativas válidas, tests críticos
+  irresolubles, riesgo de pérdida de datos, riesgo de seguridad, o
+  ambigüedad de producción.
+
 **OBJETIVO DE LA FASE:**
-- Reemplazar progresivamente Google Drive por Supabase Storage para los PDFs
-  del bot, manteniendo el comportamiento funcional actual.
-- Mantener bucket `pdfs` PRIVADO; preferir signed URLs si son compatibles.
-- Preservar: PDFs protegidos, límite 10 MB, `application/pdf`, caso especial
-  EPEC sin almacenamiento, mismo procesamiento PDF y misma deduplicación.
-- NO tocar `api/webhook.js`, NO retirar aún credenciales Google y NO eliminar
-  referencias a Drive hasta validar FASE 6.
+- Migrar `api/webhook.js` de Google Sheets API a Supabase REST (PostgREST),
+  manteniendo exactamente la misma experiencia de usuario de Telegram
+  (mensajes, comandos, callbacks, teclados, consultas, validación chat).
+- Migrar consultas: vencimientos, balance, cuotas, gasto por categoría.
+- Migrar callbacks: MANUAL|, INGRESO|, CANCELAR.
+- Migrar categorías: desde `categorias_fijas` (antes Config!E2:J100).
+- PDF dispatch (`repository_dispatch` a GitHub Actions): intacto.
+- NO agregar secret token del webhook (cambio independiente, documentado).
+- NO corregir `update_id`/`last_update_id` (decisión explícita, documentado).
+- NO retirar `GOOGLE_*`/`SHEET_ID` de Vercel (transicional, FASE 8/10).
+
+**CAMBIOS REALIZADOS:**
+- `api/webhook.js` — MODIFICADO: migración Sheets API -> Supabase REST:
+  - helpers: `supabaseFetch`, `supabaseQuery`, `supabaseInsert`,
+    `obtenerCategorias`, `toArDate`, `monthYearAr`, `todayAr`, `todayIso`.
+  - consultas migradas a PostgREST (`/rest/v1/<tabla>?select=...`):
+    vencimientos (`consolidado`), balance (`consumos`+`ingresos`),
+    cuotas (`consumos`), gasto categoría (`consumos`).
+  - callbacks migrados a `supabaseInsert` con `onConflict`:
+    `MANUAL|` → `consumos`, `INGRESO|` → `ingresos`, `CANCELAR` sin DB.
+  - `obtenerCategorias()` reemplaza `fetchSheetValues("Config!E2:J100")`.
+  - `fmt()`, `sendTelegram()`, `editTelegram()`, PDF dispatch: intactos.
+  - `TELEGRAM_CHAT_ID` validación: intacta.
+  - comentario documentado: `update_id` no se persiste ni se usa para dedup.
+  - `GOOGLE_*`/`SHEET_ID` conservadas (no retiradas, transicional).
+- `api/webhook.test.mjs` — NUEVO: 12 tests con `node:test` (categorías,
+  vencimientos, balance, cuotas, gasto categoría, MANUAL, INGRESO, CANCELAR,
+  TELEGRAM_CHAT_ID, error Supabase, PDF dispatch, payload inválido).
+- `tests/test_fase7_webhook.py` — NUEVO: wrapper Python que ejecuta
+  `node --test api/webhook.test.mjs` con `encoding="utf-8"`.
+- `tests/test_smoke.py` — ACTUALIZADO: hash blob `api/webhook.js` FASE 7.
+
+**TESTS EJECUTADOS:**
+- `node --test api/webhook.test.mjs` → **12/12 PASS**.
+- `pytest tests/test_fase7_webhook.py` → **1/1 PASS**.
+- Suite completa con DB real (pre-commit): **113 passed, 6 skipped,
+  1 failed** (solo smoke `working_tree` esperado por `api/webhook.js`
+  modificado sin commitear).
+
+**CODE REVIEW:**
+- PASS. UX Telegram intacta (mensajes, callbacks, teclados, validación chat).
+- PDF dispatch intacto (`repository_dispatch` + `client_payload`).
+- Sin secretos hardcodeados; `SUPABASE_SERVICE_ROLE_KEY` desde `process.env`.
+- `GOOGLE_*`/`SHEET_ID` no retiradas (transicional).
+- `update_id`/`last_update_id`: NO corregido (decisión explícita documentada).
+- Secret token: NO agregado (cambio independiente, documentado).
+
+**RIESGOS:**
+- El webhook requiere `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` en Vercel;
+  si no están configuradas, `ensureSupabase()` lanza error explícito.
+  Incorporación de secrets en Vercel = FASE 8.
+- `GOOGLE_*`/`SHEET_ID` siguen en Vercel pero no se usan tras FASE 7;
+  retirarlas definitivamente = FASE 10.
+- Comportamiento de parsing de montos del webhook (ej: `200mil` → 200M)
+  preservado sin corregir (decisión explícita, no parte de FASE 7).
+
+**PRÓXIMA ACCIÓN:**
+- Commitear baseline FASE 7, rerun suite completa, confirmar working tree
+  limpio, y avanzar automáticamente a FASE 8 (Secrets / Deploy).
 
 **CAMBIOS REALIZADOS:**
 - `supabase_client.py` — MODIFICADO: capa de Storage privado:
@@ -114,9 +175,8 @@ AGENTE ACTUAL:      ANALISTA
 - [x] suite completa con DB real: 111 passed / 6 skipped / 1 smoke esperado
 
 **PRÓXIMA ACCIÓN:**
-- GATE FASE 6 aprobado por el usuario. Commitear baseline, rerun completo y
-  arrancar FASE 7 (Webhook -> Supabase), separando migración de persistencia de
-  cualquier mejora de seguridad del secret token.
+- Commitear baseline FASE 7, rerun suite completa, confirmar working tree
+  limpio, y avanzar automáticamente a FASE 8 (Secrets / Deploy).
 
 ---
 
@@ -179,6 +239,14 @@ AGENTE ACTUAL:      ANALISTA
 - **TESTER**: `test_fase6_storage.py` **8/8 PASS**; `test_fase6_storage_integracion.py` preparado y **1 skip** por falta de credenciales REST en este entorno local; suite completa con DB real: **111 passed, 6 skipped, 1 smoke esperado** (`working_tree`).
 - **CODE REVIEW**: PASS preliminar. Verificado: bucket sigue privado, webhook intacto, sin secretos hardcodeados, compatibilidad transicional con `consolidado`, Drive solo como respaldo temporal explícito.
 - **GATE**: APROBADO por el usuario el 2026-08-08. Queda documentado que la validación E2E real de Storage (upload + signed URL con `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`) NO bloquea FASE 6 pero debe ejecutarse explícitamente en FASE 8/9.
+
+### FASE 7 — Webhook -> Supabase — **PASS 2026-08-08**
+- **ANALISTA**: relevado `api/webhook.js` completo (377 líneas): 4 consultas (vencimientos, balance, cuotas, gasto categoría), 3 callbacks (MANUAL|, INGRESO|, CANCELAR), config categorías (Config!E2:J100), PDF dispatch (`repository_dispatch`), validación `TELEGRAM_CHAT_ID`, env vars (`SHEET_ID`, `GOOGLE_*`, `GH_PAT`, `TELEGRAM_*`). Detectado: `update_id` validado pero no persistido ni usado para dedup de retries.
+- **ARQUITECTO**: migración a PostgREST (Supabase) con helpers `supabaseFetch`/`supabaseQuery`/`supabaseInsert`; `GOOGLE_*`/`SHEET_ID` conservadas (no retirar); secret token NO mezclado con migración de persistencia (cambio independiente); `update_id` no corregido (decisión explícita); mes actual sin padding preservado.
+- **IMPLEMENTADOR**: `api/webhook.js` migrado: consultas→PostgREST, callbacks→`supabaseInsert` con `onConflict`, `obtenerCategorias()`→`categorias_fijas`; `api/webhook.test.mjs` (12 tests `node:test`); `tests/test_fase7_webhook.py` (wrapper Python); smoke actualizado.
+- **TESTER**: `node --test` 12/12 PASS; `pytest tests/test_fase7_webhook.py` 1/1 PASS; suite completa pre-commit: 113 passed, 6 skipped, 1 failed (smoke `working_tree` esperado).
+- **CODE REVIEW**: PASS. UX Telegram intacta; PDF dispatch intacto; sin secretos hardcodeados; `update_id` y secret token documentados como decisiones explícitas; `GOOGLE_*` no retiradas.
+- **PROTOCOLO**: auto-avance a FASE 8 (protocolo nuevo: sin gate manual entre fases).
 
 ---
 
