@@ -1,4 +1,4 @@
-"""Smoke test de FASE 0: verifica que el entorno de trabajo está alineado con main@532e762."""
+"""Smoke test de FASE 0: verifica que el entorno de trabajo está alineado con el baseline (main)."""
 
 import os
 import subprocess
@@ -8,8 +8,21 @@ import pytest
 from conftest import BOT_FILE, GIT_HEAD_MAIN, REPO_ROOT, WEBHOOK_FILE
 
 
-def test_repo_head_es_main_532e762(repo_head):
-    assert repo_head == GIT_HEAD_MAIN
+def test_repo_head_es_descendiente_del_baseline(repo_root):
+    """El HEAD debe ser el baseline conocido o un descendiente directo suyo.
+
+    Se relaja la igualdad estricta porque cada commit legítimo mueve el HEAD;
+    el guard real es que la historia nunca diverge del baseline pinneado.
+    """
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", GIT_HEAD_MAIN, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"HEAD no es descendiente del baseline {GIT_HEAD_MAIN}"
+    )
 
 
 def test_working_tree_limpio_para_produccion(repo_root):
