@@ -1,0 +1,57 @@
+name: FASE 9 - Integración E2E y Regresión
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Verificar presencia de secrets (sin mostrar valores)
+        run: |
+          python -c "
+          import os, sys
+          missing = []
+          for v in ['SUPABASE_DB_URL', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']:
+              if not os.environ.get(v):
+                  missing.append(v)
+          if missing:
+              print(f'Secrets faltantes: {missing}')
+              sys.exit(1)
+          print('Todos los secrets E2E estan presentes.')
+          "
+
+      - name: Ejecutar tests FASE 9 E2E
+        run: |
+          python -m pytest tests/test_fase9_e2e.py -v --tb=short -x
+
+      - name: Ejecutar suite completa (regresión completa)
+        run: |
+          python -m pytest tests/ -v --tb=short -x --ignore=tests/test_fase6_storage_integracion.py --ignore=tests/test_fase5_integracion.py --ignore=tests/test_fase4_integracion.py --ignore=tests/test_fase3_integracion.py --ignore=tests/test_fase3_equivalencia.py --ignore=tests/test_db_connectivity.py
