@@ -1,4 +1,4 @@
-"""Smoke test de FASE 0: verifica que el entorno de trabajo está alineado con main@4b39ccf."""
+"""Smoke test de FASE 0: verifica que el entorno de trabajo está alineado con main@532e762."""
 
 import os
 import subprocess
@@ -8,7 +8,7 @@ import pytest
 from conftest import BOT_FILE, GIT_HEAD_MAIN, REPO_ROOT, WEBHOOK_FILE
 
 
-def test_repo_head_es_main_4b39ccf(repo_head):
+def test_repo_head_es_main_532e762(repo_head):
     assert repo_head == GIT_HEAD_MAIN
 
 
@@ -47,7 +47,7 @@ def test_blobs_de_git_coinciden_con_working_tree(repo_root):
             text=True,
             check=True,
         )
-        assert result.stdout.strip() == blob_hash, f"{path} no coincide con main@4b39ccf"
+        assert result.stdout.strip() == blob_hash, f"{path} no coincide con main@532e762"
 
 
 def test_bot_compila_sintaxis():
