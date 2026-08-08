@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Entorno y secretos (nunca commitear)
+.env
+.env.*
+!.env.example
+
+# Logs y archivos locales de trabajo
+logs.txt
+logs2.txt
+PROYECTO_COMPLETO.md
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Vercel
+.vercel/

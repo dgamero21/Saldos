@@ -2,6 +2,7 @@ import os
 import re
 import io
 import json
+import sys
 import time
 import base64
 import email
@@ -19,6 +20,12 @@ import pdfplumber
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+
+# FASE 3: capa de acceso a Supabase (lecturas). Se resuelve el módulo desde el
+# mismo directorio del bot (independiente del cwd de ejecución). NO se eliminan
+# aún GOOGLE_* / SHEET_ID: Sheets queda como respaldo explícito de cada lectura.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import supabase_client
 
 print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 
@@ -74,18 +81,51 @@ def get_drive_service():
     return _drive_service
 
 
+def _leer_con_supabase(func, nombre):
+    """Ejecuta una lectura contra Supabase (FASE 3).
+
+    Devuelve (ok, resultado). Si Supabase no está configurado o la lectura
+    falla, imprime '[SUPABASE READ ERROR]' (error explícito, nunca ocultado) y
+    devuelve (False, None) para que el llamador use Google Sheets como
+    respaldo (fallback documentado).
+    """
+    if not supabase_client.supabase_disponible():
+        print(
+            "[SUPABASE READ ERROR] Supabase no configurado (faltan "
+            "SUPABASE_DB_URL o SUPABASE_DBPW). "
+            f"Usando Google Sheets como respaldo para: {nombre}"
+        )
+        return False, None
+    try:
+        return True, func()
+    except supabase_client.SupabaseError as exc:
+        print(
+            f"[SUPABASE READ ERROR] {nombre}: {exc}. "
+            "Usando Google Sheets como respaldo."
+        )
+        return False, None
+
+
 def debe_ejecutar_ahora():
     forzar = os.environ.get("FORZAR_EJECUCION", "false").lower()
     if forzar == "true":
         return True
 
-    sh = get_gc().open_by_key(SHEET_ID)
-    ws_config = sh.worksheet("Config")
-    filas = ws_config.get_all_records()
-    if not filas:
-        return True
-
-    hora_deseada = str(filas[0].get("Hora_Ejecucion", "")).strip()
+    hora_deseada = ""
+    ok, hora_supabase = _leer_con_supabase(
+        lambda: supabase_client.obtener_config_valor("Hora_Ejecucion"),
+        "config Hora_Ejecucion",
+    )
+    if ok:
+        # Valor raw preservado (p. ej. '12' sin ':'); NO se corrige en FASE 3.
+        hora_deseada = hora_supabase
+    else:
+        sh = get_gc().open_by_key(SHEET_ID)
+        ws_config = sh.worksheet("Config")
+        filas = ws_config.get_all_records()
+        if not filas:
+            return True
+        hora_deseada = str(filas[0].get("Hora_Ejecucion", "")).strip()
     if not hora_deseada:
         return True
 
@@ -125,7 +165,14 @@ def obtener_valor_clave_flexible(registro, clave_buscada):
 
 
 def obtener_reglas():
-    print("[DEBUG] Leyendo reglas de la hoja Datos...")
+    print("[DEBUG] Leyendo reglas desde Supabase...")
+    ok, reglas_supabase = _leer_con_supabase(supabase_client.obtener_reglas, "reglas")
+    if ok:
+        # supabase_client.obtener_reglas devuelve SOLO reglas activas
+        # (WHERE activo = TRUE), igual que el filtro del bot (Activo == 'SI').
+        return reglas_supabase
+
+    print("[DEBUG] Fallback: Leyendo reglas de la hoja Datos...")
     sh = get_gc().open_by_key(SHEET_ID)
     ws_datos = sh.worksheet("Datos")
     filas = ws_datos.get_all_records()
@@ -256,21 +303,17 @@ def formatear_fecha_resumen(fecha_rfc2822):
 
 
 def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
-    m_cand = normalizar_monto(monto_total)
-    f_vto_cand = str(fecha_vencimiento).strip()
-    r_cand = str(remitente).strip().lower()
-    
-    id_consolidado = f"{r_cand}|{f_vto_cand}|{m_cand}"
+    """FASE 4: escribe en Supabase (persistencia principal).
 
-    ws.append_row([
+    NO escribe en Google Sheets (evita doble escritura / inconsistencia). Si
+    Supabase falla, propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]') y NO
+    inserta en Sheets. Devuelve 'insertado' | 'existente' (el UNIQUE dedup de
+    la DB decide: lower(remitente)|vto|monto, igual que es_registro_duplicado).
+    """
+    return supabase_client.guardar_consolidado(
         formatear_fecha_resumen(fecha_rfc),
-        remitente,
-        asunto,
-        monto_total,
-        fecha_vencimiento,
-        link_drive,
-        id_consolidado
-    ], value_input_option="USER_ENTERED")
+        remitente, asunto, monto_total, fecha_vencimiento, link_drive,
+    )
 
 
 def marcar_procesado(mensaje_id, label_id):
@@ -358,6 +401,16 @@ def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
 
 
 def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+    ok, existe = _leer_con_supabase(
+        lambda: supabase_client.existe_consolidado(
+            remitente, monto_total, fecha_vencimiento
+        ),
+        "duplicado de Consolidado",
+    )
+    if ok:
+        return existe
+
+    # Fallback de LECTURA a Sheets (las escrituras NO tienen fallback en FASE 4).
     try:
         filas = ws_consolidado.get_all_values()
         if len(filas) <= 1:
@@ -575,70 +628,14 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
 # ---------- Guardado y Actualización de Consumos ----------
 
 def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
-    if not consumos:
-        return
+    """FASE 4: escribe en Supabase (persistencia principal).
 
-    valores_actuales = ws_consumos.get_all_values()
-    
-    if not valores_actuales:
-        valores_actuales = [[
-            "Fecha Consumo", "Comprobante", "Detalle", "Cuota Actual", "Cuota Total",
-            "Pesos", "Dolar", "Fecha Cierre", "Fecha Vencimiento", "Remitente", "ID_Consumo"
-        ]]
-    
-    if len(valores_actuales[0]) < 11:
-        while len(valores_actuales[0]) < 10:
-            valores_actuales[0].append("")
-        valores_actuales[0].append("ID_Consumo")
-
-    mapa_ids = {}
-    for idx, fila in enumerate(valores_actuales):
-        if idx == 0:
-            continue
-        while len(fila) < 11:
-            fila.append("")
-        id_fila = str(fila[10]).strip()
-        if id_fila:
-            mapa_ids[id_fila] = idx
-
-    for c in consumos:
-        f_cons = str(c["fecha"]).strip()
-        comp = str(c["comprobante"]).strip()
-        det = str(c["detalle"]).strip()
-        c_tot = str(c["cuota_total"]).strip()
-        r_env = str(remitente).strip()
-        
-        id_unico = f"{f_cons}|{comp}|{det}|{c_tot}|{r_env}"
-        
-        if id_unico in mapa_ids:
-            fila_idx = mapa_ids[id_unico]
-            fila = valores_actuales[fila_idx]
-            try:
-                cuota_nueva = int(c["cuota_actual"])
-                cuota_existente = int(fila[3]) if str(fila[3]).isdigit() else 0
-            except Exception:
-                cuota_nueva = 1
-                cuota_existente = 0
-
-            if cuota_nueva >= cuota_existente:
-                fila[3] = c["cuota_actual"]       
-                fila[5] = c["pesos"]              
-                fila[6] = c["dolar"]              
-                fila[7] = c["fecha_cierre"]       
-                fila[8] = c["fecha_vencimiento"]  
-        else:
-            nueva_fila = [
-                c["fecha"], c["comprobante"], c["detalle"], c["cuota_actual"], c["cuota_total"],
-                c["pesos"], c["dolar"], c["fecha_cierre"], c["fecha_vencimiento"], remitente, id_unico
-            ]
-            valores_actuales.append(nueva_fila)
-            mapa_ids[id_unico] = len(valores_actuales) - 1
-
-    for fila in valores_actuales:
-        while len(fila) < 11:
-            fila.append("")
-
-    ws_consumos.update(values=valores_actuales, range_name='A1', value_input_option="USER_ENTERED")
+    NO escribe en Google Sheets (evita doble escritura). Si Supabase falla,
+    propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]') y NO inserta en
+    Sheets. Devuelve la lista de estados (mismo orden que la entrada):
+    'insertado' | 'actualizado' | 'sin_cambios' (cuota nunca retrocede).
+    """
+    return supabase_client.guardar_o_actualizar_consumos(consumos, remitente)
 
 
 # ---------- Sincronización Automática de Fijos ----------
@@ -647,85 +644,94 @@ def procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos):
     if ws_consumos is None:
         return
 
-    valores_config = ws_config.get_all_values()
-    if len(valores_config) <= 1:
-        return
-
     ahora = datetime.now(ZoneInfo("America/Argentina/Cordoba"))
     fecha_fijo = f"01/{ahora.strftime('%m/%Y')}"
 
     gastos_fijos = []
     ingresos_fijos = []
 
-    for fila in valores_config[1:]:
-        if len(fila) >= 6:
-            tipo_g = str(fila[4]).strip()
-            monto_g_raw = str(fila[5]).strip()
-            if tipo_g and monto_g_raw:
-                try:
-                    val_g = normalizar_monto(monto_g_raw)
-                    if val_g > 0:
-                        gastos_fijos.append({"tipo": tipo_g, "monto": val_g})
-                except Exception:
-                    pass
+    ok, fijos_supabase = _leer_con_supabase(
+        supabase_client.obtener_fijos, "fijos mensuales"
+    )
+    if ok:
+        gastos_fijos, ingresos_fijos = fijos_supabase
+    else:
+        valores_config = ws_config.get_all_values()
+        if len(valores_config) <= 1:
+            return
 
-        if len(fila) >= 10:
-            tipo_i = str(fila[8]).strip()
-            monto_i_raw = str(fila[9]).strip()
-            if tipo_i and monto_i_raw:
-                try:
-                    val_i = normalizar_monto(monto_i_raw)
-                    if val_i > 0:
-                        ingresos_fijos.append({"tipo": tipo_i, "monto": val_i})
-                except Exception:
-                    pass
+        for fila in valores_config[1:]:
+            if len(fila) >= 6:
+                tipo_g = str(fila[4]).strip()
+                monto_g_raw = str(fila[5]).strip()
+                if tipo_g and monto_g_raw:
+                    try:
+                        val_g = normalizar_monto(monto_g_raw)
+                        if val_g > 0:
+                            gastos_fijos.append({"tipo": tipo_g, "monto": val_g})
+                    except Exception:
+                        pass
+
+            if len(fila) >= 10:
+                tipo_i = str(fila[8]).strip()
+                monto_i_raw = str(fila[9]).strip()
+                if tipo_i and monto_i_raw:
+                    try:
+                        val_i = normalizar_monto(monto_i_raw)
+                        if val_i > 0:
+                            ingresos_fijos.append({"tipo": tipo_i, "monto": val_i})
+                    except Exception:
+                        pass
 
     if gastos_fijos:
-        valores_consumos = ws_consumos.get_all_values()
-        ids_c_existentes = set()
-        if valores_consumos:
-            for f in valores_consumos[1:]:
-                if len(f) >= 11 and f[10].strip():
-                    ids_c_existentes.add(f[10].strip())
-
-        filas_c_nuevas = []
-        for gf in gastos_fijos:
-            id_fijo = f"{fecha_fijo}|Fijo|{gf['tipo']}|1|Fijo Config"
-            if id_fijo not in ids_c_existentes:
-                filas_c_nuevas.append([
-                    fecha_fijo, "Fijo Config", gf['tipo'], 1, 1, gf['monto'], 0.0, "", "", "Fijo Config", id_fijo
-                ])
+        consumos_fijos = [
+            {
+                "fecha": fecha_fijo, "comprobante": "Fijo Config",
+                "detalle": gf["tipo"], "cuota_actual": 1, "cuota_total": 1,
+                "pesos": gf["monto"], "dolar": 0.0,
+                "fecha_cierre": "", "fecha_vencimiento": "",
+            }
+            for gf in gastos_fijos
+        ]
+        resultados_c = supabase_client.guardar_o_actualizar_consumos(
+            consumos_fijos, "Fijo Config"
+        )
+        filas_c_nuevas = [r for r in resultados_c if r["estado"] == "insertado"]
 
         if filas_c_nuevas:
-            ws_consumos.append_rows(filas_c_nuevas, value_input_option="USER_ENTERED")
-            msgs = [f"📌 Gasto: {row[2]} (${row[5]:,.2f})" for row in filas_c_nuevas]
+            msgs = [
+                f"📌 Gasto: {r['detalle']} (${r['pesos']:,.2f})"
+                for r in filas_c_nuevas
+            ]
             enviar_telegram(f"🗓️ Gastos Fijos del Mes ({fecha_fijo}):\n" + "\n".join(msgs))
 
     if ingresos_fijos and ws_ingresos is not None:
-        valores_ingresos = ws_ingresos.get_all_values()
-        ids_i_existentes = set()
-        if valores_ingresos:
-            for f in valores_ingresos[1:]:
-                if len(f) >= 5 and f[4].strip():
-                    ids_i_existentes.add(f[4].strip())
-
-        filas_i_nuevas = []
+        nuevos_ingresos = []
         for ing in ingresos_fijos:
-            id_ing = f"{fecha_fijo}|Ingreso|{ing['tipo']}|Fijo Config"
-            if id_ing not in ids_i_existentes:
-                filas_i_nuevas.append([
-                    fecha_fijo, ing['tipo'], ing['monto'], "Fijo Config", id_ing
-                ])
+            estado = supabase_client.guardar_ingreso(
+                fecha_fijo, ing["tipo"], ing["monto"], "Fijo Config"
+            )
+            if estado == "insertado":
+                nuevos_ingresos.append(ing)
 
-        if filas_i_nuevas:
-            ws_ingresos.append_rows(filas_i_nuevas, value_input_option="USER_ENTERED")
-            msgs_i = [f"💰 Ingreso: {row[1]} (${row[2]:,.2f})" for row in filas_i_nuevas]
+        if nuevos_ingresos:
+            msgs_i = [
+                f"💰 Ingreso: {ing['tipo']} (${ing['monto']:,.2f})"
+                for ing in nuevos_ingresos
+            ]
             enviar_telegram(f"🗓️ Ingresos Fijos del Mes ({fecha_fijo}):\n" + "\n".join(msgs_i))
 
 
 # ---------- Procesamiento de Telegram ----------
 
 def leer_config_completo(ws_config):
+    ok, config_supabase = _leer_con_supabase(
+        supabase_client.obtener_config_completo, "config completa"
+    )
+    if ok:
+        # (last_update_id, state, tipos_gastos, tipos_ingresos) 1:1 con la hoja.
+        return config_supabase
+
     valores = ws_config.get_all_values()
     last_update_id = 0
     state = ""
@@ -835,10 +841,12 @@ def procesar_mensajes_telegram():
                         categoria_sel = partes[2]
                         fecha_hoy = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                         
-                        ws_consumos = sh.worksheet("Consumos")
-                        ws_consumos.append_row([
-                            fecha_hoy, "Telegram", categoria_sel, 1, 1, monto_val, 0.0, "", "", "Manual Telegram", f"{fecha_hoy}|Telegram|{categoria_sel}|1|Manual Telegram"
-                        ], value_input_option="USER_ENTERED")
+                        supabase_client.guardar_o_actualizar_consumos([{
+                            "fecha": fecha_hoy, "comprobante": "Telegram",
+                            "detalle": categoria_sel, "cuota_actual": 1,
+                            "cuota_total": 1, "pesos": monto_val, "dolar": 0.0,
+                            "fecha_cierre": "", "fecha_vencimiento": "",
+                        }], "Manual Telegram")
                         
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", json={
                             "chat_id": chat_id, "message_id": message_id,
@@ -854,11 +862,9 @@ def procesar_mensajes_telegram():
                         categoria_sel = partes[2]
                         fecha_hoy = datetime.now(ZoneInfo("America/Argentina/Cordoba")).strftime("%d/%m/%Y")
                         
-                        ws_ingresos = sh.worksheet("Ingresos")
-                        id_ing = f"{fecha_hoy}|Ingreso|{categoria_sel}|Manual Telegram"
-                        ws_ingresos.append_row([
-                            fecha_hoy, categoria_sel, monto_val, "Manual Telegram", id_ing
-                        ], value_input_option="USER_ENTERED")
+                        supabase_client.guardar_ingreso(
+                            fecha_hoy, categoria_sel, monto_val, "Manual Telegram"
+                        )
                         
                         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText", json={
                             "chat_id": chat_id, "message_id": message_id,
