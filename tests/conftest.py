@@ -18,7 +18,7 @@ os.environ.setdefault("GMAIL_APP_PASSWORD", "test-app-pass")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-GIT_HEAD_MAIN = "532e7629ce62fde990aa293d47a2cdc83dd20d13"
+GIT_HEAD_MAIN = "85223b6b071be660110db35860c3d394865efd75"
 BOT_FILE = os.path.join(REPO_ROOT, "bot_Saldo.py")
 WEBHOOK_FILE = os.path.join(REPO_ROOT, "api", "webhook.js")
 
