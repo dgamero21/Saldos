@@ -213,6 +213,14 @@ def test_obtener_fijos_solo_monto_positivo(monkeypatch):
     assert ingresos == [{"tipo": "SUELDO", "monto": 1700000.0}]
 
 
+def test_obtener_tipos_sql_filtra_activas():
+    # FASE 10A: categorías desactivadas (activo = FALSE) NO aparecen en alta
+    # ni generan fijos. El filtro va en la SQL (server-side), igual que en
+    # obtener_reglas; las inactivas no llegan a Python.
+    src = inspect.getsource(supabase_client._obtener_categorias)
+    assert "WHERE activo = TRUE" in src
+
+
 def test_obtener_config_completo(monkeypatch):
     config = [("Last_Telegram_Update_ID", "5"), ("Telegram_State", "x")]
     categorias = [

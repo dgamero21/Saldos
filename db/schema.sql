@@ -81,6 +81,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_reglas_dedup
 -- SECCIÓN 4 — Tabla: consolidado (hoja 'Consolidado')
 -- Dedup 1:1 con bot_Saldo.es_registro_duplicado / guardar_en_sheet:
 --   id_consolidado = lower(remitente)|vto|monto
+-- pagado: FASE 10A (Web App) — estado de pago del vencimiento.
+--   NO existía campo equivalente (auditoría 10A); aditivo con DEFAULT FALSE
+--   para no romper INSERTs existentes (bot/webhook/import_data).
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS consolidado (
     id                BIGSERIAL PRIMARY KEY,
@@ -90,6 +93,7 @@ CREATE TABLE IF NOT EXISTS consolidado (
     monto_total       NUMERIC(14,2) NOT NULL,
     fecha_vencimiento DATE NOT NULL,
     link_drive        TEXT,
+    pagado            BOOLEAN NOT NULL DEFAULT FALSE,
     id_consolidado    TEXT,   -- legacy (formato del bot); la integridad la da el UNIQUE INDEX
     pertenece         TEXT NOT NULL DEFAULT 'David',
     creado_en         TIMESTAMPTZ NOT NULL DEFAULT now()

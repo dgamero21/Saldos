@@ -119,7 +119,9 @@ export default async function handler(req, res) {
   const obtenerCategorias = async () => {
     const rows = await supabaseQuery(
       'categorias_fijas',
-      '?select=es_ingreso,tipo&order=id.asc'
+      // FASE 10A: solo categorías activas (activo = TRUE) en el teclado de
+      // Telegram. Las desactivadas se ocultan, no se borran.
+      '?select=es_ingreso,tipo&activo=eq.true&order=id.asc'
     );
     const tiposGastos = [];
     const tiposIngresos = [];

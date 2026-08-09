@@ -294,10 +294,15 @@ def obtener_config_telegram() -> tuple[int, str]:
 # ---------------------------------------------------------------------------
 
 def _obtener_categorias() -> list[dict]:
-    """Filas de categorias_fijas en orden de la hoja (id)."""
+    """Filas de categorias_fijas en orden de la hoja (id).
+
+    FASE 10A: solo categorías ACTIVAS (activo = TRUE). Las desactivadas no
+    aparecen en alta (obtener_tipos) ni generan fijos (obtener_fijos), pero
+    NO se borran y sus históricos quedan intactos.
+    """
     filas = _fetch_all(
         "SELECT es_ingreso, tipo, monto_fijo, pertenece FROM categorias_fijas "
-        "ORDER BY id"
+        "WHERE activo = TRUE ORDER BY id"
     )
     return [
         {

@@ -103,6 +103,31 @@ test('categorias: monto manual envia teclado con categorias y cancelar', async (
   assert.deepEqual(payload.reply_markup.inline_keyboard.at(-1), [{ text: '❌ Cancelar', callback_data: 'CANCELAR' }]);
 });
 
+test('categorias: consulta filtra activas (activo=eq.true)', async () => {
+  const calls = [];
+  const result = await invoke({
+    body: { update_id: 3, message: { chat: { id: 'chat-1' }, text: '150k' } },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.includes('/rest/v1/categorias_fijas')) {
+        return jsonResponse([
+          { es_ingreso: false, tipo: 'ALQUILER' },
+          { es_ingreso: false, tipo: 'NIÑERA' },
+          { es_ingreso: true, tipo: 'SUELDO' }
+        ]);
+      }
+      if (url.includes('/sendMessage')) {
+        return jsonResponse({ ok: true });
+      }
+      throw new Error(`fetch inesperado: ${url}`);
+    }
+  });
+
+  assert.equal(result.statusCode, 200);
+  const catCall = calls.find((c) => c.url.includes('/rest/v1/categorias_fijas'));
+  assert.ok(catCall.url.includes('activo=eq.true'), `URL sin filtro activo: ${catCall.url}`);
+});
+
 test('consulta vencimientos usa consolidado y mantiene mensaje', async () => {
   const calls = [];
   await invoke({

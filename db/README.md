@@ -22,11 +22,14 @@ bot, del webhook ni del workflow.
 ## Artefactos
 
 | Archivo | Propósito |
-|---|---|
+|---|---|---|
 | `db/schema.sql` | DDL: tablas, tipos, constraints, índices, RLS, Storage bucket |
 | `db/seed.sql` | Datos iniciales de `Config`, `Datos` (reglas) y categorías (idempotente) |
 | `db/rollback.sql` | Reversa completa del schema (destructivo) |
 | `db/validate.sql` | Consultas de verificación post-aplicación (PASS/FAIL) |
+| `db/migracion_10a.sql` | FASE 10A: `consolidado.pagado` (aditivo) |
+| `db/rollback_10a.sql` | FASE 10A: revierte `pagado` |
+| `db/validate_10a.sql` | FASE 10A: verificación post-aplicación |
 
 ---
 
@@ -83,6 +86,7 @@ Python-RE, compatibles con `re.compile`).
 | `monto_total` | NUMERIC(14,2) NOT NULL | |
 | `fecha_vencimiento` | DATE NOT NULL | |
 | `link_drive` | TEXT | Legacy: URL de Drive |
+| `pagado` | BOOLEAN NOT NULL DEFAULT FALSE | **FASE 10A**: estado de pago Web App (no existía campo equivalente; aditivo, no rompe INSERTs) |
 | `id_consolidado` | TEXT GENERATED | `lower(remitente)\|vto\|monto` |
 | `pertenece` | TEXT NOT NULL DEFAULT 'David' | |
 | **UNIQUE INDEX** | `(lower(remitente), fecha_vencimiento, monto_total)` | **dedup 1:1** |

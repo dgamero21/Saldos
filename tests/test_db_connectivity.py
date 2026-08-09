@@ -124,3 +124,49 @@ def test_bucket_pdfs_existe():
     conn.close()
     assert fila is not None, "Bucket 'pdfs' no existe"
     assert fila[2] is False, "Bucket 'pdfs' debe ser privado (public = FALSE)"
+
+
+# ---------------------------------------------------------------------------
+# FASE 10A — Web App: consolidado.pagado
+# ---------------------------------------------------------------------------
+
+def test_consolidado_columna_pagado():
+    """FASE 10A: la columna pagado existe, BOOLEAN NOT NULL con DEFAULT FALSE."""
+    conn = _connect()
+    if conn is None:
+        pytest.skip("No disponible para verificación SQL")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'consolidado'
+              AND column_name = 'pagado'
+            """
+        )
+        fila = cur.fetchone()
+    conn.close()
+    assert fila is not None, "consolidado.pagado no existe (aplicar db/migracion_10a.sql)"
+    data_type, is_nullable, column_default = fila
+    assert data_type == "boolean"
+    assert is_nullable == "NO"
+    assert "false" in (column_default or "").lower()
+
+
+def test_consolidado_pagado_backfill_false():
+    """FASE 10A: los registros históricos quedaron con pagado = FALSE."""
+    conn = _connect()
+    if conn is None:
+        pytest.skip("No disponible para verificación SQL")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FILTER (WHERE pagado), count(*)
+            FROM consolidado
+            """
+        )
+        pagados, total = cur.fetchone()
+    conn.close()
+    assert pagados == 0, f"{pagados} registros con pagado=TRUE sin haber PATCH (fase 10C)"
+    assert total > 0, "consolidado vacío: migración de históricos no aplicada"
