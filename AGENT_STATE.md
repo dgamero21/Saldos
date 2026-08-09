@@ -9,15 +9,15 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 10E — Retiro de `gspread` (deps) — **PASS 2026-08-09**
-ESTADO:             Suite local 144 passed / 7 skipped / 1 smoke esperado
-                    (working tree antes de commitear); py_compile OK. Cero
-                    imports de gspread en *.py (relevado por grep).
-AGENTE ACTUAL:      FASE 10E = PASS. `gspread` retirado de requirements.txt
-                    y de la instalacion del workflow de produccion
-                    (revisar-mails.yml). No toca produccion/datos/secrets.
-                    Pendiente fase futura: retirar GOOGLE_*/SHEET_ID (Gmail
-                    los necesita) y borrado de Sheets/Drive PDFs.
+FASE ACTUAL:        FASE 11A — Scaffold Web App (solo lectura) — **PASS 2026-08-09**
+ESTADO:             Suite local 144 passed / 7 skipped; smoke 7/7 PASS; tests
+                    Node dashboard 4/4 PASS. Working tree limpio tras commit.
+AGENTE ACTUAL:      FASE 11A = PASS. Web App (UI original Index.html + ECharts
+                    + Tailwind) servida desde Vercel en `/`; endpoint
+                    `GET /api/dashboard` reproduce `getDashboardRawData`
+                    sobre PostgREST con auth bearer `API_APP_TOKEN`. UI
+                    congelada (sin rediseño); `toggleEstadoPago` no-op.
+                    No escritura, no producción, no secrets nuevos.
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -533,6 +533,33 @@ AGENTE ACTUAL:      FASE 10E = PASS. `gspread` retirado de requirements.txt
   para Gmail (no usa gspread). Cambio revertible (rollback = re-anadir la
   linea). `cleanup_old.py` sigue sin trackear.
 - **GATE**: no requerido (no afecta produccion).
+
+### FASE 11A — Scaffold Web App (solo lectura) — **PASS 2026-08-09**
+- **ANALISTA**: UI original (`Code.gs` + `Index.html` con Tailwind + ECharts)
+  recibida como referencia visual. 0 imports de `gspread` en repo `Saldos`;
+  `webhook.js` ya en PostgREST (FASE 7). Decisión: copiar UI tal cual a
+  `Saldos/web/` (monorepo), sin rediseño; exponer `GET /api/dashboard` que
+  reproduce `getDashboardRawData` contra PostgREST.
+- **ARQUITECTO**: monorepo `Saldos/web/` servido estático por Vercel
+  (`@vercel/static`); `vercel.json` extendido con `/api/dashboard` y
+  fallback a `Index.html`. Helpers PostgREST + auth bearer extraídos a
+  `api/_supabase.js` (reutilizables). Auth: bearer estático `API_APP_TOKEN`
+  (single-user, simple, sin deps). UI: `fetch` reemplaza `google.script.run`,
+  `toggleEstadoPago` no-op (solo lectura). `webhook.js` intacto.
+- **IMPLEMENTADOR**: `web/Index.html` (copia literal + 2 ajustes mínimos);
+  `api/_supabase.js` (helpers + auth); `api/dashboard.js` (mapea
+  `consumos`/`consolidado`/`ingresos`/`reglas` → JSON esperado por UI);
+  `vercel.json` actualizado; `api/dashboard.test.mjs` (4 tests: 401/401/200/200).
+- **TESTER**: `node --test api/dashboard.test.mjs` → **4/4 PASS** (401 sin
+  token, 401 token inválido, 200 estructura completa con mapeo entidad/icono,
+  200 error Supabase en payload no 500). Suite Python **144 passed / 7
+  skipped**; smoke **7/7 PASS**. `py_compile` OK.
+- **CODE REVIEW**: PASS. UI congelada (mismo diseño/UX). No escritura, no
+  producción, no secrets nuevos. `toggleEstadoPago` no-op loguea info.
+  Reversible (borrar `web/`, `api/dashboard.js`, `api/_supabase.js`,
+  revertir `vercel.json`).
+- **GATE**: no requerido (no afecta producción). FASE 11B pendiente
+  (escritura: `POST /api/pago`, `POST /api/fijos`, auth UI).
 
 ---
 

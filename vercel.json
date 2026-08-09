@@ -3,12 +3,28 @@
     {
       "src": "api/webhook.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/dashboard.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "web/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
       "src": "/api/webhook",
       "dest": "api/webhook.js"
+    },
+    {
+      "src": "/api/dashboard",
+      "dest": "api/dashboard.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "web/Index.html"
     }
   ]
 }

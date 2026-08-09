@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>Dashboard Financiero</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet"/>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary": "#7dd3fc",
+                        "on-primary": "#000000",
+                        "secondary": "#38bdf8",
+                        "background": "#0f172a",
+                        "on-background": "#f8fafc",
+                        "surface": "#0f172a",
+                        "on-surface": "#f8fafc",
+                        "surface-variant": "#1e293b",
+                        "on-surface-variant": "#cbd5e1",
+                        "outline-variant": "#334155",
+                        "surface-container-high": "#334155"
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .data-mono { font-family: 'JetBrains Mono', monospace; }
+        .shadow-soft { box-shadow: 0px 4px 16px rgba(0,0,0,0.3); }
+        .glass {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="bg-background min-h-screen text-on-background pb-[90px] bg-gradient-to-br from-[#0f172a] via-[#1e293b] to-[#0f172a]">
+
+    <!-- TopAppBar -->
+    <header class="w-full sticky top-0 flex items-center justify-between px-4 py-3 z-40 glass border-b-0 shadow-sm">
+        <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center overflow-hidden">
+                <span class="material-symbols-outlined text-primary text-base" style="font-variation-settings: 'FILL' 1;">person</span>
+            </div>
+            <span id="header-titulo" class="text-xs font-bold uppercase tracking-wider text-primary">Home Control</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <button aria-label="Notifications" class="text-primary hover:opacity-80 transition-opacity active:scale-95">
+                <span class="material-symbols-outlined text-sm">notifications_active</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="px-4 flex flex-col gap-5 max-w-3xl mx-auto mt-3 relative">
+        
+        <!-- BUSCADOR Y FILTROS -->
+        <section class="flex flex-col gap-3 relative z-30">
+            <div class="flex gap-2">
+                <div class="relative flex-1">
+                    <span class="material-symbols-outlined absolute left-3 top-2.5 text-on-surface-variant text-sm">search</span>
+                    <input id="search-input" type="text" placeholder="Buscar comercio, servicio, persona..." class="w-full pl-10 pr-4 py-2 bg-surface-variant/40 border border-outline-variant/30 rounded-xl text-sm text-on-background placeholder-on-surface-variant focus:outline-none focus:border-primary/50 transition-colors">
+                </div>
+                <button id="filter-toggle-btn" class="px-3 bg-surface-variant/40 border border-outline-variant/30 rounded-xl flex items-center justify-center text-primary active:scale-95 transition-transform">
+                    <span class="material-symbols-outlined text-sm">filter_list</span>
+                </button>
+            </div>
+
+            <!-- PANEL DESPLEGABLE DE FILTROS MULTI-SELECCIÓN -->
+            <div id="filter-panel" class="hidden glass rounded-[1.2rem] p-4 flex flex-col gap-4 border border-outline-variant/30 shadow-soft relative z-40">
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    
+                    <!-- Año Multi-Select -->
+                    <div class="relative flex flex-col gap-1">
+                        <label class="text-[10px] uppercase font-bold tracking-wider text-primary">Año</label>
+                        <button type="button" onclick="toggleDropdown('dropdown-anio')" class="w-full text-xs rounded-xl px-3 py-2 bg-surface-variant/60 border border-outline-variant/40 text-on-background flex justify-between items-center outline-none">
+                            <span id="label-anio" class="truncate font-medium">Todos los años</span>
+                            <span class="material-symbols-outlined text-sm text-primary">expand_more</span>
+                        </button>
+                        <div id="dropdown-anio" class="hidden absolute top-full left-0 w-full mt-1 max-h-48 overflow-y-auto glass rounded-xl p-2 z-[100] flex flex-col gap-1 border border-outline-variant/40 shadow-soft"></div>
+                    </div>
+
+                    <!-- Mes Multi-Select -->
+                    <div class="relative flex flex-col gap-1">
+                        <label class="text-[10px] uppercase font-bold tracking-wider text-primary">Mes</label>
+                        <button type="button" onclick="toggleDropdown('dropdown-mes')" class="w-full text-xs rounded-xl px-3 py-2 bg-surface-variant/60 border border-outline-variant/40 text-on-background flex justify-between items-center outline-none">
+                            <span id="label-mes" class="truncate font-medium">Todos los meses</span>
+                            <span class="material-symbols-outlined text-sm text-primary">expand_more</span>
+                        </button>
+                        <div id="dropdown-mes" class="hidden absolute top-full left-0 w-full mt-1 max-h-48 overflow-y-auto glass rounded-xl p-2 z-[100] flex flex-col gap-1 border border-outline-variant/40 shadow-soft"></div>
+                    </div>
+
+                    <!-- Entidad Multi-Select -->
+                    <div class="relative flex flex-col gap-1">
+                        <label class="text-[10px] uppercase font-bold tracking-wider text-primary">Entidad</label>
+                        <button type="button" onclick="toggleDropdown('dropdown-entidad')" class="w-full text-xs rounded-xl px-3 py-2 bg-surface-variant/60 border border-outline-variant/40 text-on-background flex justify-between items-center outline-none">
+                            <span id="label-entidad" class="truncate font-medium">Todas las entidades</span>
+                            <span class="material-symbols-outlined text-sm text-primary">expand_more</span>
+                        </button>
+                        <div id="dropdown-entidad" class="hidden absolute top-full left-0 w-full mt-1 max-h-48 overflow-y-auto glass rounded-xl p-2 z-[100] flex flex-col gap-1 border border-outline-variant/40 shadow-soft"></div>
+                    </div>
+
+                    <!-- Comercio / Detalle Multi-Select -->
+                    <div class="relative flex flex-col gap-1">
+                        <label class="text-[10px] uppercase font-bold tracking-wider text-primary">Comercio / Detalle</label>
+                        <button type="button" onclick="toggleDropdown('dropdown-detalle')" class="w-full text-xs rounded-xl px-3 py-2 bg-surface-variant/60 border border-outline-variant/40 text-on-background flex justify-between items-center outline-none">
+                            <span id="label-detalle" class="truncate font-medium">Todos los comercios</span>
+                            <span class="material-symbols-outlined text-sm text-primary">expand_more</span>
+                        </button>
+                        <div id="dropdown-detalle" class="hidden absolute top-full left-0 w-full mt-1 max-h-48 overflow-y-auto glass rounded-xl p-2 z-[100] flex flex-col gap-1 border border-outline-variant/40 shadow-soft"></div>
+                    </div>
+
+                    <!-- Pertenece Multi-Select -->
+                    <div class="relative flex flex-col gap-1">
+                        <label class="text-[10px] uppercase font-bold tracking-wider text-primary">Pertenece</label>
+                        <button type="button" onclick="toggleDropdown('dropdown-pertenece')" class="w-full text-xs rounded-xl px-3 py-2 bg-surface-variant/60 border border-outline-variant/40 text-on-background flex justify-between items-center outline-none">
+                            <span id="label-pertenece" class="truncate font-medium">Todos</span>
+                            <span class="material-symbols-outlined text-sm text-primary">expand_more</span>
+                        </button>
+                        <div id="dropdown-pertenece" class="hidden absolute top-full left-0 w-full mt-1 max-h-48 overflow-y-auto glass rounded-xl p-2 z-[100] flex flex-col gap-1 border border-outline-variant/40 shadow-soft"></div>
+                    </div>
+
+                </div>
+
+                <div class="flex justify-between items-center pt-2 border-t border-outline-variant/20">
+                    <span class="text-[10px] text-on-surface-variant italic">Multiselección interactiva (5 Filtros)</span>
+                    <button id="clear-filters-btn" class="text-xs text-primary font-bold hover:underline transition-colors flex items-center gap-1">
+                        <span class="material-symbols-outlined text-sm">restart_alt</span>
+                        Limpiar Filtros
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECCIÓN 1: HOME (Control de Caja y Vencimientos) -->
+        <div id="section-home" class="flex flex-col gap-5 relative z-10">
+            
+            <!-- Header / KPI Section -->
+            <section class="flex flex-col gap-4 py-5 px-4 glass rounded-[1rem] shadow-soft">
+                <div class="grid grid-cols-2 gap-3 pb-3 border-b border-outline-variant/30">
+                    
+                    <div id="kpi-card-ingresos" onclick="setKpiFilter('INGRESOS')" 
+                         class="bg-surface-variant/30 p-3 rounded-xl border border-outline-variant/20 cursor-pointer hover:border-primary/50 active:scale-95 transition-all">
+                        <div class="flex justify-between items-center mb-1">
+                            <h2 class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">Ingreso Mes</h2>
+                            <span class="material-symbols-outlined text-xs text-primary">payments</span>
+                        </div>
+                        <div id="ingreso-mensual" class="text-base font-bold text-on-background data-mono">$0,00</div>
+                    </div>
+
+                    <div id="kpi-card-disponible" onclick="setKpiFilter('TODOS')" 
+                         class="bg-primary/10 p-3 rounded-xl border border-primary/30 cursor-pointer hover:border-primary active:scale-95 transition-all">
+                        <div class="flex justify-between items-center mb-1">
+                            <h2 class="text-[10px] uppercase tracking-wider text-primary font-bold">Disponible Real</h2>
+                            <span class="material-symbols-outlined text-xs text-primary">account_balance_wallet</span>
+                        </div>
+                        <div id="disponible-neto" class="text-base font-bold text-primary data-mono">$0,00</div>
+                    </div>
+
+                    <div id="kpi-card-pagado" onclick="setKpiFilter('PAGADO')" 
+                         class="bg-green-500/10 p-3 rounded-xl border border-green-500/30 cursor-pointer hover:border-green-400 active:scale-95 transition-all">
+                        <div class="flex justify-between items-center mb-1">
+                            <h2 class="text-[10px] uppercase tracking-wider text-green-400 font-bold">🟢 Ya Pagado</h2>
+                            <span class="material-symbols-outlined text-xs text-green-400">check_circle</span>
+                        </div>
+                        <div id="ya-pagado" class="text-base font-bold text-green-400 data-mono">$0,00</div>
+                    </div>
+
+                    <div id="kpi-card-pendiente" onclick="setKpiFilter('PENDIENTE')" 
+                         class="bg-red-500/10 p-3 rounded-xl border border-red-500/30 cursor-pointer hover:border-red-400 active:scale-95 transition-all">
+                        <div class="flex justify-between items-center mb-1">
+                            <h2 class="text-[10px] uppercase tracking-wider text-red-400 font-bold">🔴 Falta Pagar</h2>
+                            <span class="material-symbols-outlined text-xs text-red-400">pending</span>
+                        </div>
+                        <div id="falta-pagar" class="text-base font-bold text-red-400 data-mono">$0,00</div>
+                    </div>
+
+                </div>
+
+                <div class="flex flex-col gap-1.5">
+                    <div class="w-full bg-surface-container-high rounded-full h-2 overflow-hidden border border-outline-variant/30">
+                        <div id="progreso-ingresos" class="bg-green-400 h-2 rounded-full shadow-[0_0_8px_rgba(74,222,128,0.6)] transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <p id="progreso-texto" class="text-[10px] text-on-surface-variant text-center">0% del compromiso saldado</p>
+                </div>
+            </section>
+
+            <!-- Proyección de Pagos Futuros -->
+            <section class="flex flex-col gap-2">
+                <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Proyección de Pagos Futuros</h2>
+                <div class="glass rounded-[1.2rem] p-3 flex flex-col gap-2">
+                    <div id="line-chart-proyeccion" class="w-full h-44"></div>
+                </div>
+            </section>
+
+            <!-- Vencimientos -->
+            <section class="flex flex-col gap-3">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Vencimientos</h2>
+                    <div class="flex bg-surface-variant/40 p-1 rounded-xl border border-outline-variant/30 gap-1 text-[10px] font-bold">
+                        <button id="tab-pendientes" onclick="setTabVencimientos('PENDIENTE')" class="px-2.5 py-1 rounded-lg bg-red-500/20 text-red-300 border border-red-500/30 transition-all font-bold">
+                            🔴 Pendientes <span id="cant-pendientes">(0)</span>
+                        </button>
+                        <button id="tab-pagados" onclick="setTabVencimientos('PAGADO')" class="px-2.5 py-1 rounded-lg text-on-surface-variant hover:text-on-background transition-all">
+                            🟢 Pagados <span id="cant-pagados">(0)</span>
+                        </button>
+                        <button id="tab-todos" onclick="setTabVencimientos('TODOS')" class="px-2.5 py-1 rounded-lg text-on-surface-variant hover:text-on-background transition-all">
+                            Todos
+                        </button>
+                    </div>
+                </div>
+
+                <div id="lista-vencimientos" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+            </section>
+        </div>
+
+        <!-- SECCIÓN 2: DETALLE (Análisis e Insights de Consumos) -->
+        <div id="section-detalle" class="hidden flex flex-col gap-5 relative z-10">
+            
+            <!-- 4 Tarjetas KPI de Insights Clicables -->
+            <section class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div class="glass p-3 rounded-xl border border-outline-variant/30 flex flex-col justify-between">
+                    <span class="text-[10px] uppercase font-bold text-on-surface-variant">💳 Total Consumido</span>
+                    <span id="kpi-total-consumido" class="text-sm font-bold text-primary data-mono mt-1">$0,00</span>
+                </div>
+                <div id="card-mayor-consumo" onclick="filterByTopExpense()" class="glass p-3 rounded-xl border border-outline-variant/30 flex flex-col justify-between cursor-pointer hover:border-red-400 active:scale-95 transition-all">
+                    <span class="text-[10px] uppercase font-bold text-on-surface-variant">🔥 Mayor Consumo</span>
+                    <span id="kpi-mayor-consumo" class="text-xs font-bold text-red-400 truncate mt-1">-</span>
+                </div>
+                <div id="card-comercio-frecuente" onclick="filterByFrequentCommerce()" class="glass p-3 rounded-xl border border-outline-variant/30 flex flex-col justify-between cursor-pointer hover:border-green-400 active:scale-95 transition-all">
+                    <span class="text-[10px] uppercase font-bold text-on-surface-variant">🛍️ Comercio Frecuente</span>
+                    <span id="kpi-comercio-frecuente" class="text-xs font-bold text-green-400 truncate mt-1">-</span>
+                </div>
+                <div class="glass p-3 rounded-xl border border-outline-variant/30 flex flex-col justify-between">
+                    <span class="text-[10px] uppercase font-bold text-on-surface-variant">📦 % en Cuotas</span>
+                    <span id="kpi-porcentaje-cuotas" class="text-sm font-bold text-secondary data-mono mt-1">0%</span>
+                </div>
+            </section>
+
+            <!-- Gráfico de Líneas: Evolución / Duración del Consumo Buscado -->
+            <section class="flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Línea de Tiempo del Consumo</h2>
+                    <span id="lbl-consumo-buscado" class="text-[10px] text-primary italic font-bold">Todos los consumos (Haz clic en un punto para filtrar el mes)</span>
+                </div>
+                <div class="glass rounded-[1.2rem] p-3 flex flex-col gap-2">
+                    <div id="line-chart-consumo-detalle" class="w-full h-44 cursor-pointer"></div>
+                </div>
+            </section>
+
+            <!-- Gráfico de Donut: Distribución por Comercio -->
+            <section class="flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Distribución por Comercio / Entidad</h2>
+                    <span class="text-[10px] text-on-surface-variant italic">Haz clic en un sector para aislar el comercio</span>
+                </div>
+                <div class="glass rounded-[1.2rem] p-3 flex flex-col gap-2">
+                    <div id="donut-chart-detalle" class="w-full h-48 cursor-pointer"></div>
+                </div>
+            </section>
+
+            <!-- Tabla Desglosada de Consumos con Paginación -->
+            <section class="flex flex-col gap-3">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Tabla de Consumos Desglosada</h2>
+                    <span id="lbl-total-registros-tabla" class="text-[10px] text-primary font-bold">0 registros</span>
+                </div>
+
+                <div class="glass rounded-[1.2rem] overflow-hidden border border-outline-variant/30 shadow-soft">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs border-collapse">
+                            <thead>
+                                <tr class="bg-surface-variant/60 text-primary border-b border-outline-variant/40 uppercase text-[9px] tracking-wider font-bold">
+                                    <th class="p-3">Fecha</th>
+                                    <th class="p-3">Detalle / Comercio</th>
+                                    <th class="p-3 text-center">Cuota</th>
+                                    <th class="p-3 text-right">Monto ($)</th>
+                                    <th class="p-3">Tarjeta</th>
+                                    <th class="p-3">Pertenece</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tabla-consumos-body" class="divide-y divide-outline-variant/20 text-on-background">
+                                <!-- Filas dinámicas -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Controles de Paginación -->
+                    <div class="flex justify-between items-center px-4 py-3 bg-surface-variant/40 border-t border-outline-variant/30 text-xs text-on-surface-variant">
+                        <button id="btn-page-prev" onclick="cambiarPaginaTabla(-1)" class="px-3 py-1 bg-surface-variant border border-outline-variant/40 rounded-lg text-primary disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/10 transition-all flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">chevron_left</span>
+                            Anterior
+                        </button>
+                        <span id="lbl-pagina-actual" class="font-bold data-mono text-on-background">Página 1 de 1</span>
+                        <button id="btn-page-next" onclick="cambiarPaginaTabla(1)" class="px-3 py-1 bg-surface-variant border border-outline-variant/40 rounded-lg text-primary disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/10 transition-all flex items-center gap-1">
+                            Siguiente
+                            <span class="material-symbols-outlined text-sm">chevron_right</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+    </main>
+
+    <!-- BottomNavBar -->
+    <nav class="fixed bottom-0 left-0 w-full flex justify-around items-center px-4 py-3 glass border-t-0 shadow-[0_-4px_16px_rgba(0,0,0,0.3)] z-50 pb-safe">
+        <button id="nav-btn-home" onclick="switchNavTab('home')" class="flex flex-col items-center justify-center bg-primary/20 text-primary border border-primary/30 rounded-full px-6 py-1 transition-transform active:scale-95">
+            <span class="material-symbols-outlined text-lg" style="font-variation-settings: 'FILL' 1;">home</span>
+            <span class="text-[10px] uppercase font-bold mt-0.5">Home</span>
+        </button>
+        <button id="nav-btn-detalle" onclick="switchNavTab('detalle')" class="flex flex-col items-center justify-center text-on-surface-variant px-6 py-1 hover:text-primary transition-colors active:scale-95">
+            <span class="material-symbols-outlined text-lg">analytics</span>
+            <span class="text-[10px] uppercase font-bold mt-0.5">Detalle</span>
+        </button>
+    </nav>
+
+    <script>
+        const AppState = {
+            raw: { consumos: [], ingresos: [], vencimientos: [] },
+            filtered: { consumos: [], ingresos: [], vencimientos: [] },
+            filters: { search: "", anio: [], mes: [], entidad: [], pertenece: [], detalle: [] },
+            tabEstado: "PENDIENTE",
+            kpiFilter: "TODOS",
+            activeNav: "home",
+            tablePage: 1,
+            tablePageSize: 10,
+            topCommerceName: "",
+            frequentCommerceName: "",
+            chartInstance: null,
+            chartDetalleInstance: null,
+            chartDonutInstance: null
+        };
+
+        const mesesNombres = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+        document.addEventListener("DOMContentLoaded", function() {
+            initUiListeners();
+            fetchDashboardRawData();
+        });
+
+        // FASE 11A: fuente de datos via API Vercel (reemplaza google.script.run).
+        // El token se inyecta en window.API_TOKEN desde el deploy (Vercel reescribe
+        // este HTML al servir /); en local vacio -> la API responde 401 y se muestra
+        // el error por onFatalError. Solo lectura: sin escrituras.
+        async function fetchDashboardRawData() {
+            try {
+                const token = (window.API_TOKEN || "").trim();
+                const res = await fetch("/api/dashboard", {
+                    method: "GET",
+                    headers: token ? { "Authorization": "Bearer " + token } : {}
+                });
+                if (!res.ok) {
+                    const txt = await res.text();
+                    throw new Error("HTTP " + res.status + (txt ? ": " + txt : ""));
+                }
+                const data = await res.json();
+                onRawDataLoaded(data);
+            } catch (err) {
+                onFatalError({ message: (err && err.message) || String(err) });
+            }
+        }
+
+        function switchNavTab(tab) {
+            AppState.activeNav = tab;
+            const btnHome = document.getElementById("nav-btn-home");
+            const btnDetalle = document.getElementById("nav-btn-detalle");
+            const secHome = document.getElementById("section-home");
+            const secDetalle = document.getElementById("section-detalle");
+            const lblHeader = document.getElementById("header-titulo");
+
+            if (tab === "home") {
+                secHome.classList.remove("hidden");
+                secDetalle.classList.add("hidden");
+                btnHome.className = "flex flex-col items-center justify-center bg-primary/20 text-primary border border-primary/30 rounded-full px-6 py-1 transition-transform active:scale-95";
+                btnDetalle.className = "flex flex-col items-center justify-center text-on-surface-variant px-6 py-1 hover:text-primary transition-colors active:scale-95";
+                lblHeader.innerText = "Home Control";
+            } else {
+                secHome.classList.add("hidden");
+                secDetalle.classList.remove("hidden");
+                btnDetalle.className = "flex flex-col items-center justify-center bg-primary/20 text-primary border border-primary/30 rounded-full px-6 py-1 transition-transform active:scale-95";
+                btnHome.className = "flex flex-col items-center justify-center text-on-surface-variant px-6 py-1 hover:text-primary transition-colors active:scale-95";
+                lblHeader.innerText = "Análisis de Consumos";
+            }
+
+            rebuildDashboardUI();
+        }
+
+        function toggleDropdown(id) {
+            const el = document.getElementById(id);
+            const todos = ["dropdown-anio", "dropdown-mes", "dropdown-entidad", "dropdown-pertenece", "dropdown-detalle"];
+            todos.forEach(d => {
+                if (d !== id) document.getElementById(d).classList.add("hidden");
+            });
+            el.classList.toggle("hidden");
+        }
+
+        function initUiListeners() {
+            document.getElementById("search-input").addEventListener("input", function(e) {
+                AppState.filters.search = e.target.value.toLowerCase();
+                AppState.tablePage = 1;
+                applyCrossfilters();
+            });
+
+            document.getElementById("filter-toggle-btn").addEventListener("click", function() {
+                const panel = document.getElementById("filter-panel");
+                panel.classList.toggle("hidden");
+            });
+
+            document.getElementById("clear-filters-btn").addEventListener("click", function() {
+                AppState.filters = { search: "", anio: [], mes: [], entidad: [], pertenece: [], detalle: [] };
+                AppState.tablePage = 1;
+                document.getElementById("search-input").value = "";
+                document.querySelectorAll("#filter-panel input[type='checkbox']").forEach(cb => cb.checked = false);
+                updateDropdownLabels();
+                applyCrossfilters();
+            });
+
+            document.addEventListener("click", function(e) {
+                if (!e.target.closest("#filter-panel") && !e.target.closest("#filter-toggle-btn")) {
+                    ["dropdown-anio", "dropdown-mes", "dropdown-entidad", "dropdown-pertenece", "dropdown-detalle"].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.classList.add("hidden");
+                    });
+                }
+            });
+        }
+
+        function onRawDataLoaded(data) {
+            if (!data || data.error) {
+                onFatalError({ message: data ? data.error : "Respuesta nula del servidor." });
+                return;
+            }
+
+            AppState.raw = data;
+            poblarSelects(data);
+            
+            const hoy = new Date();
+            const anioActual = String(hoy.getFullYear());
+
+            AppState.filters.anio = [anioActual];
+            AppState.filters.mes = ["7"];
+            AppState.filters.pertenece = ["David"];
+
+            syncCheckboxes("dropdown-anio", [anioActual]);
+            syncCheckboxes("dropdown-mes", ["7"]);
+            syncCheckboxes("dropdown-pertenece", ["David"]);
+
+            updateDropdownLabels();
+            applyCrossfilters();
+        }
+
+        function syncCheckboxes(containerId, valores) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.querySelectorAll("input[type='checkbox']").forEach(cb => {
+                cb.checked = valores.includes(cb.value);
+            });
+        }
+
+        function onFatalError(error) {
+            console.error("Error cargando la aplicación: ", error);
+        }
+
+        function poblarSelects(data) {
+            const vencimientosList = data.vencimientos || [];
+            const consumosList = data.consumos || [];
+
+            const anios = [...new Set(vencimientosList.map(v => v.anio).concat(consumosList.map(c => c.anio)).filter(Boolean))].sort();
+            const entidades = [...new Set(vencimientosList.map(v => v.entidad).concat(consumosList.map(c => c.entidad)).filter(Boolean))].sort();
+            const pertenencias = [...new Set(vencimientosList.map(v => v.pertenece).concat(consumosList.map(c => c.pertenece)).filter(Boolean))].sort();
+            const comercios = [...new Set(consumosList.map(c => c.detalle).filter(Boolean))].sort();
+
+            buildMultiDropdown("dropdown-anio", anios, "anio");
+            buildMultiDropdown("dropdown-entidad", entidades, "entidad");
+            buildMultiDropdown("dropdown-pertenece", pertenencias, "pertenece");
+            buildMultiDropdown("dropdown-detalle", comercios, "detalle");
+
+            const mesesObj = mesesNombres.map((nombre, idx) => ({ val: String(idx + 1), label: nombre }));
+            buildMultiDropdownObj("dropdown-mes", mesesObj, "mes");
+        }
+
+        function selectAllDropdown(containerId, dimension, selectAll) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.querySelectorAll("input[type='checkbox']").forEach(cb => {
+                cb.checked = selectAll;
+            });
+            onMultiFilterChange(dimension);
+        }
+
+        function buildMultiDropdown(containerId, list, dimension) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            let htmlControls = `
+                <div class="flex justify-between items-center pb-1 mb-1 border-b border-outline-variant/30 text-[10px] font-bold">
+                    <button type="button" onclick="selectAllDropdown('${containerId}', '${dimension}', true)" class="text-primary hover:underline">Marcar Todo</button>
+                    <button type="button" onclick="selectAllDropdown('${containerId}', '${dimension}', false)" class="text-on-surface-variant hover:underline">Limpiar</button>
+                </div>
+            `;
+            
+            list.forEach(item => {
+                htmlControls += `
+                    <label class="flex items-center gap-2 px-2 py-1.5 hover:bg-primary/10 rounded-lg cursor-pointer text-xs text-on-background transition-colors">
+                        <input type="checkbox" value="${item}" onchange="onMultiFilterChange('${dimension}')" class="rounded border-outline-variant/60 text-primary focus:ring-0 cursor-pointer">
+                        <span class="truncate">${item}</span>
+                    </label>
+                `;
+            });
+            container.innerHTML = htmlControls;
+        }
+
+        function buildMultiDropdownObj(containerId, listObj, dimension) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            let htmlControls = `
+                <div class="flex justify-between items-center pb-1 mb-1 border-b border-outline-variant/30 text-[10px] font-bold">
+                    <button type="button" onclick="selectAllDropdown('${containerId}', '${dimension}', true)" class="text-primary hover:underline">Marcar Todo</button>
+                    <button type="button" onclick="selectAllDropdown('${containerId}', '${dimension}', false)" class="text-on-surface-variant hover:underline">Limpiar</button>
+                </div>
+            `;
+
+            listObj.forEach(item => {
+                htmlControls += `
+                    <label class="flex items-center gap-2 px-2 py-1.5 hover:bg-primary/10 rounded-lg cursor-pointer text-xs text-on-background transition-colors">
+                        <input type="checkbox" value="${item.val}" onchange="onMultiFilterChange('${dimension}')" class="rounded border-outline-variant/60 text-primary focus:ring-0 cursor-pointer">
+                        <span class="truncate">${item.label}</span>
+                    </label>
+                `;
+            });
+            container.innerHTML = htmlControls;
+        }
+
+        function onMultiFilterChange(dimension) {
+            const container = document.getElementById(`dropdown-${dimension}`);
+            const checked = Array.from(container.querySelectorAll("input[type='checkbox']:checked")).map(cb => cb.value);
+            AppState.filters[dimension] = checked;
+            updateDropdownLabels();
+            applyCrossfilters();
+        }
+
+        function updateDropdownLabels() {
+            const f = AppState.filters;
+
+            const setLabel = (id, list, defaultText, isMes = false) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (list.length === 0) {
+                    el.innerText = defaultText;
+                } else if (list.length === 1) {
+                    el.innerText = isMes ? mesesNombres[parseInt(list[0]) - 1] : list[0];
+                } else {
+                    el.innerText = `${list.length} seleccionados`;
+                }
+            };
+
+            setLabel("label-anio", f.anio, "Todos los años");
+            setLabel("label-mes", f.mes, "Todos los meses", true);
+            setLabel("label-entidad", f.entidad, "Todas las entidades");
+            setLabel("label-pertenece", f.pertenece, "Todos");
+            setLabel("label-detalle", f.detalle, "Todos los comercios");
+        }
+
+        // EVALUACIÓN DE VENTANA DE CUOTAS ACTIVAS
+        function consumoCaeEnFiltroMesAnio(c, fAnio, fMes) {
+            if (fAnio.length === 0 && fMes.length === 0) return true;
+
+            // Si es compra de 1 solo pago o no tiene fecha Vencimiento
+            if (!c.fechaVencimiento || c.cuotaTotal <= 1) {
+                const matchAnio = fAnio.length === 0 || fAnio.includes(String(c.anio));
+                const matchMes = fMes.length === 0 || fMes.includes(String(c.mes));
+                return matchAnio && matchMes;
+            }
+
+            // Para compras en cuotas (>1 cuota): Evaluar ventana de cuotas vigentes
+            const partes = c.fechaVencimiento.split("/");
+            if (partes.length !== 3) {
+                const matchAnio = fAnio.length === 0 || fAnio.includes(String(c.anio));
+                const matchMes = fMes.length === 0 || fMes.includes(String(c.mes));
+                return matchAnio && matchMes;
+            }
+
+            const baseAnio = parseInt(partes[2]);
+            const baseMes = parseInt(partes[1]);
+            const cuotasRestantes = c.cuotaTotal - c.cuotaActual;
+
+            for (let r = 0; r <= cuotasRestantes; r++) {
+                const fechaFutura = new Date(baseAnio, (baseMes - 1) + r, 1);
+                const anioFuturo = String(fechaFutura.getFullYear());
+                const mesFuturo = String(fechaFutura.getMonth() + 1);
+
+                const matchAnio = fAnio.length === 0 || fAnio.includes(anioFuturo);
+                const matchMes = fMes.length === 0 || fMes.includes(mesFuturo);
+
+                if (matchAnio && matchMes) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        function applyCrossfilters() {
+            const f = AppState.filters;
+
+            const matchesFilterVenc = (item) => {
+                const matchSearch = !f.search || 
+                    (item.entidad && item.entidad.toLowerCase().includes(f.search)) ||
+                    (item.detalle && item.detalle.toLowerCase().includes(f.search)) ||
+                    (item.pertenece && item.pertenece.toLowerCase().includes(f.search)) ||
+                    (item.asunto && item.asunto.toLowerCase().includes(f.search));
+
+                const matchAnio = f.anio.length === 0 || f.anio.includes(String(item.anio));
+                const matchMes = f.mes.length === 0 || f.mes.includes(String(item.mes));
+                const matchEntidad = f.entidad.length === 0 || f.entidad.includes(item.entidad);
+                const matchPertenece = f.pertenece.length === 0 || f.pertenece.includes(item.pertenece);
+                const matchDetalle = f.detalle.length === 0 || (item.detalle && f.detalle.includes(item.detalle));
+
+                return matchSearch && matchAnio && matchMes && matchEntidad && matchPertenece && matchDetalle;
+            };
+
+            AppState.filtered.vencimientos = AppState.raw.vencimientos.filter(matchesFilterVenc);
+            AppState.filtered.ingresos = AppState.raw.ingresos.filter(matchesFilterVenc);
+            
+            // FILTRADO INTELIGENTE DE CONSUMOS POR VENTANA DE CUOTAS
+            AppState.filtered.consumos = AppState.raw.consumos.filter(c => {
+                const matchSearch = !f.search || (c.detalle && c.detalle.toLowerCase().includes(f.search)) || (c.entidad && c.entidad.toLowerCase().includes(f.search));
+                const matchEntidad = f.entidad.length === 0 || f.entidad.includes(c.entidad);
+                const matchPertenece = f.pertenece.length === 0 || f.pertenece.includes(c.pertenece);
+                const matchDetalle = f.detalle.length === 0 || (c.detalle && f.detalle.includes(c.detalle));
+                
+                const matchMesAnioCuotas = consumoCaeEnFiltroMesAnio(c, f.anio, f.mes);
+
+                return matchSearch && matchEntidad && matchPertenece && matchDetalle && matchMesAnioCuotas;
+            });
+
+            rebuildDashboardUI();
+        }
+
+        function rebuildDashboardUI() {
+            if (AppState.activeNav === "home") {
+                rebuildHomeUI();
+            } else {
+                rebuildDetalleUI();
+            }
+        }
+
+        function filterByTopExpense() {
+            if (AppState.topCommerceName) {
+                if (AppState.filters.detalle.includes(AppState.topCommerceName)) {
+                    AppState.filters.detalle = [];
+                } else {
+                    AppState.filters.detalle = [AppState.topCommerceName];
+                }
+                syncCheckboxes("dropdown-detalle", AppState.filters.detalle);
+                updateDropdownLabels();
+                applyCrossfilters();
+            }
+        }
+
+        function filterByFrequentCommerce() {
+            if (AppState.frequentCommerceName) {
+                if (AppState.filters.detalle.includes(AppState.frequentCommerceName)) {
+                    AppState.filters.detalle = [];
+                } else {
+                    AppState.filters.detalle = [AppState.frequentCommerceName];
+                }
+                syncCheckboxes("dropdown-detalle", AppState.filters.detalle);
+                updateDropdownLabels();
+                applyCrossfilters();
+            }
+        }
+
+        function rebuildHomeUI() {
+            const filteredVenc = AppState.filtered.vencimientos;
+            const filteredIng = AppState.filtered.ingresos;
+
+            const ingresoMensual = filteredIng.reduce((acc, i) => acc + i.monto, 0);
+
+            const yaPagado = filteredVenc.filter(v => v.estado === "PAGADO").reduce((acc, v) => acc + v.monto, 0);
+            const faltaPagar = filteredVenc.filter(v => v.estado !== "PAGADO").reduce((acc, v) => acc + v.monto, 0);
+            const totalPagar = yaPagado + faltaPagar;
+            const disponibleNeto = ingresoMensual - yaPagado;
+
+            document.getElementById("ingreso-mensual").innerText = formatMoneda(ingresoMensual, false);
+            document.getElementById("ya-pagado").innerText = formatMoneda(yaPagado, false);
+            document.getElementById("falta-pagar").innerText = formatMoneda(faltaPagar, false);
+            
+            const dispEl = document.getElementById("disponible-neto");
+            dispEl.innerText = formatMoneda(disponibleNeto, false);
+            if (disponibleNeto < 0) {
+                dispEl.className = "text-base font-bold text-red-400 data-mono";
+            } else {
+                dispEl.className = "text-base font-bold text-primary data-mono";
+            }
+
+            const porcentajePago = totalPagar > 0 ? ((yaPagado / totalPagar) * 100).toFixed(1) : 0;
+            document.getElementById("progreso-ingresos").style.width = Math.min(porcentajePago, 100) + "%";
+            document.getElementById("progreso-texto").innerText = `${porcentajePago}% del compromiso mensual saldado`;
+
+            const cantPend = filteredVenc.filter(v => v.estado !== "PAGADO").length;
+            const cantPag = filteredVenc.filter(v => v.estado === "PAGADO").length;
+            
+            document.getElementById("cant-pendientes").innerText = `(${cantPend})`;
+            document.getElementById("cant-pagados").innerText = `(${cantPag})`;
+
+            renderVencimientos(filteredVenc);
+
+            const proyeccionesProcesadas = procesarProyeccionesLocales(AppState.filtered.consumos);
+            renderLineChart(proyeccionesProcesadas);
+        }
+
+        function rebuildDetalleUI() {
+            const consumos = AppState.filtered.consumos;
+
+            const totalConsumido = consumos.reduce((acc, c) => acc + c.monto, 0);
+            document.getElementById("kpi-total-consumido").innerText = formatMoneda(totalConsumido, false);
+
+            let mayorConsumoTxt = "-";
+            AppState.topCommerceName = "";
+            if (consumos.length > 0) {
+                const max = consumos.reduce((prev, current) => (prev.monto > current.monto) ? prev : current);
+                AppState.topCommerceName = max.detalle;
+                mayorConsumoTxt = `${max.detalle} (${formatMoneda(max.monto, false)})`;
+            }
+            document.getElementById("kpi-mayor-consumo").innerText = mayorConsumoTxt;
+
+            let comercioFrecuenteTxt = "-";
+            AppState.frequentCommerceName = "";
+            if (consumos.length > 0) {
+                const conteo = {};
+                consumos.forEach(c => {
+                    const det = c.detalle || "Otros";
+                    conteo[det] = (conteo[det] || 0) + 1;
+                });
+                const top = Object.keys(conteo).reduce((a, b) => conteo[a] > conteo[b] ? a : b);
+                AppState.frequentCommerceName = top;
+                comercioFrecuenteTxt = `${top} (${conteo[top]}x)`;
+            }
+            document.getElementById("kpi-comercio-frecuente").innerText = comercioFrecuenteTxt;
+
+            const enCuotas = consumos.filter(c => c.cuotaTotal > 1).length;
+            const pctCuotas = consumos.length > 0 ? ((enCuotas / consumos.length) * 100).toFixed(0) : 0;
+            document.getElementById("kpi-porcentaje-cuotas").innerText = `${pctCuotas}%`;
+
+            let busquedaTxt = 'Todos los consumos';
+            if (AppState.filters.detalle.length > 0) {
+                busquedaTxt = `'${AppState.filters.detalle.join(', ').toUpperCase()}'`;
+            } else if (AppState.filters.search) {
+                busquedaTxt = `'${AppState.filters.search.toUpperCase()}'`;
+            }
+            document.getElementById("lbl-consumo-buscado").innerText = busquedaTxt;
+
+            renderLineChartDetalle(consumos);
+            renderDonutChartDetalle(consumos);
+            renderTablaConsumos(consumos);
+        }
+
+        function procesarProyeccionesLocales(consumosFiltrados) {
+            const temporal = {};
+            const baseAnio = (AppState.filters.anio && AppState.filters.anio.length > 0) 
+                ? parseInt(AppState.filters.anio[0]) 
+                : new Date().getFullYear();
+
+            const listaMeses = [];
+            for (let m = 0; m < 12; m++) {
+                const key = baseAnio + "-" + String(m + 1).padStart(2, '0');
+                temporal[key] = 0;
+                listaMeses.push(key);
+            }
+
+            consumosFiltrados.forEach(c => {
+                if (!c.fechaVencimiento || !c.monto) return;
+                const partes = c.fechaVencimiento.split("/");
+                if (partes.length !== 3) return;
+                
+                const fVenc = new Date(parseInt(partes[2]), parseInt(partes[1]) - 1, 1);
+                const restantes = c.cuotaTotal - c.cuotaActual;
+
+                for (let r = 0; r <= restantes; r++) {
+                    const fechaFutura = new Date(fVenc.getFullYear(), fVenc.getMonth() + r, 1);
+                    const k = fechaFutura.getFullYear() + "-" + String(fechaFutura.getMonth() + 1).padStart(2, '0');
+                    if (temporal[k] !== undefined) {
+                        temporal[k] += c.monto;
+                    }
+                }
+            });
+
+            return listaMeses.map(mes => {
+                const partes = mes.split("-");
+                return {
+                    periodo: mesesNombres[parseInt(partes[1]) - 1].toUpperCase() + " " + partes[0].slice(-2),
+                    monto: Math.round(temporal[mes])
+                };
+            });
+        }
+
+        function renderLineChart(proyecciones) {
+            const chartDom = document.getElementById('line-chart-proyeccion');
+            if (AppState.chartInstance) AppState.chartInstance.dispose();
+            
+            const myChart = echarts.init(chartDom);
+            AppState.chartInstance = myChart;
+
+            const meses = proyecciones.map(p => p.periodo);
+            const montos = proyecciones.map(p => p.monto);
+
+            const option = {
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    borderWidth: 1,
+                    textStyle: { color: '#f8fafc', fontFamily: 'Inter' },
+                    formatter: function(params) {
+                        const val = formatMoneda(params[0].value);
+                        return `<div class="data-mono font-bold">${params[0].name}: <span class="text-primary">${val}</span></div>`;
+                    }
+                },
+                grid: { left: '2%', right: '4%', bottom: '5%', top: '12%', containLabel: true },
+                xAxis: {
+                    type: 'category',
+                    boundaryGap: false,
+                    data: meses,
+                    axisLabel: { color: '#cbd5e1', fontFamily: 'Inter', fontSize: 10 },
+                    axisLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.1)' } }
+                },
+                yAxis: {
+                    type: 'value',
+                    splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.05)' } },
+                    axisLabel: {
+                        color: '#cbd5e1',
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 10,
+                        formatter: (val) => '$' + val.toLocaleString('es-AR')
+                    }
+                },
+                series: [{
+                    name: 'Deuda Proyectada',
+                    type: 'line',
+                    smooth: true,
+                    showSymbol: true,
+                    symbolSize: 6,
+                    itemStyle: { color: '#7dd3fc' },
+                    lineStyle: { width: 3, color: '#7dd3fc', shadowColor: 'rgba(125,211,252,0.4)', shadowBlur: 10 },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(125,211,252,0.3)' },
+                            { offset: 1, color: 'rgba(125,211,252,0)' }
+                        ])
+                    },
+                    data: montos
+                }]
+            };
+
+            myChart.setOption(option);
+            window.addEventListener('resize', () => myChart.resize());
+        }
+
+        // CROSS-FILTER: Clic en el punto de línea para filtrar Mes/Año
+        function renderLineChartDetalle(consumos) {
+            const chartDom = document.getElementById('line-chart-consumo-detalle');
+            if (AppState.chartDetalleInstance) AppState.chartDetalleInstance.dispose();
+            
+            const myChart = echarts.init(chartDom);
+            AppState.chartDetalleInstance = myChart;
+
+            const proyecciones = procesarProyeccionesLocales(consumos);
+            const meses = proyecciones.map(p => p.periodo);
+            const montos = proyecciones.map(p => p.monto);
+
+            const option = {
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    textStyle: { color: '#f8fafc', fontFamily: 'Inter' },
+                    formatter: (p) => `<div class="data-mono font-bold">${p[0].name}: <span class="text-secondary">${formatMoneda(p[0].value)}</span></div>`
+                },
+                grid: { left: '2%', right: '4%', bottom: '5%', top: '12%', containLabel: true },
+                xAxis: {
+                    type: 'category',
+                    boundaryGap: false,
+                    data: meses,
+                    axisLabel: { color: '#cbd5e1', fontSize: 10 }
+                },
+                yAxis: {
+                    type: 'value',
+                    splitLine: { lineStyle: { color: 'rgba(255, 255, 255, 0.05)' } },
+                    axisLabel: { color: '#cbd5e1', fontSize: 10, formatter: (val) => '$' + val.toLocaleString('es-AR') }
+                },
+                series: [{
+                    name: 'Evolución',
+                    type: 'line',
+                    smooth: true,
+                    symbolSize: 8,
+                    itemStyle: { color: '#38bdf8' },
+                    lineStyle: { width: 3, color: '#38bdf8' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(56,189,248,0.3)' },
+                            { offset: 1, color: 'rgba(56,189,248,0)' }
+                        ])
+                    },
+                    data: montos
+                }]
+            };
+
+            myChart.setOption(option);
+
+            // EVENTO CROSS-FILTER EN LÍNEA DE TIEMPO
+            myChart.off('click');
+            myChart.on('click', function(params) {
+                if (!params || !params.name) return;
+                const partes = params.name.split(" ");
+                if (partes.length === 2) {
+                    const idxMes = mesesNombres.findIndex(m => m.toUpperCase() === partes[0].toUpperCase());
+                    if (idxMes !== -1) {
+                        const mesStr = String(idxMes + 1);
+                        const anioStr = "20" + partes[1];
+                        
+                        if (AppState.filters.mes.includes(mesStr) && AppState.filters.anio.includes(anioStr)) {
+                            AppState.filters.mes = [];
+                        } else {
+                            AppState.filters.mes = [mesStr];
+                            AppState.filters.anio = [anioStr];
+                        }
+                        syncCheckboxes("dropdown-mes", AppState.filters.mes);
+                        syncCheckboxes("dropdown-anio", AppState.filters.anio);
+                        updateDropdownLabels();
+                        applyCrossfilters();
+                    }
+                }
+            });
+
+            window.addEventListener('resize', () => myChart.resize());
+        }
+
+        // CROSS-FILTER: Clic en porción de Dona para filtrar Comercio / Detalle
+        function renderDonutChartDetalle(consumos) {
+            const chartDom = document.getElementById('donut-chart-detalle');
+            if (AppState.chartDonutInstance) AppState.chartDonutInstance.dispose();
+            
+            const myChart = echarts.init(chartDom);
+            AppState.chartDonutInstance = myChart;
+
+            const agrupado = {};
+            consumos.forEach(c => {
+                const key = c.detalle || c.entidad || "Sin Categoría";
+                agrupado[key] = (agrupado[key] || 0) + c.monto;
+            });
+
+            const dataPie = Object.keys(agrupado)
+                .map(k => ({ name: k, value: Math.round(agrupado[k]) }))
+                .sort((a, b) => b.value - a.value);
+
+            const option = {
+                tooltip: {
+                    trigger: 'item',
+                    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                    borderColor: 'rgba(255, 255, 255, 0.1)',
+                    textStyle: { color: '#f8fafc', fontFamily: 'Inter' },
+                    formatter: (p) => `${p.name}: <b>${formatMoneda(p.value)}</b> (${p.percent}%)`
+                },
+                legend: {
+                    type: 'scroll',
+                    orient: 'vertical',
+                    right: '0%',
+                    top: 'middle',
+                    textStyle: { color: '#cbd5e1', fontSize: 10 }
+                },
+                series: [{
+                    name: 'Comercio',
+                    type: 'pie',
+                    radius: ['35%', '68%'],
+                    center: ['30%', '50%'],
+                    avoidLabelOverlap: true,
+                    label: { show: false },
+                    data: dataPie
+                }]
+            };
+
+            myChart.setOption(option);
+
+            // EVENTO CROSS-FILTER EN DONA
+            myChart.off('click');
+            myChart.on('click', function(params) {
+                if (!params || !params.name) return;
+                const commerce = params.name;
+                
+                if (AppState.filters.detalle.includes(commerce)) {
+                    AppState.filters.detalle = [];
+                } else {
+                    AppState.filters.detalle = [commerce];
+                }
+                syncCheckboxes("dropdown-detalle", AppState.filters.detalle);
+                updateDropdownLabels();
+                applyCrossfilters();
+            });
+
+            window.addEventListener('resize', () => myChart.resize());
+        }
+
+        function cambiarPaginaTabla(delta) {
+            const totalItems = AppState.filtered.consumos.length;
+            const maxPages = Math.ceil(totalItems / AppState.tablePageSize) || 1;
+            
+            AppState.tablePage += delta;
+            if (AppState.tablePage < 1) AppState.tablePage = 1;
+            if (AppState.tablePage > maxPages) AppState.tablePage = maxPages;
+
+            renderTablaConsumos(AppState.filtered.consumos);
+        }
+
+        // CROSS-FILTER: Clic en Fila de la Tabla
+        function renderTablaConsumos(consumos) {
+            const tbody = document.getElementById("tabla-consumos-body");
+            tbody.innerHTML = "";
+
+            const totalRegistros = consumos.length;
+            document.getElementById("lbl-total-registros-tabla").innerText = `${totalRegistros} registros`;
+
+            if (totalRegistros === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="p-6 text-center text-on-surface-variant italic">
+                            No se encontraron consumos para el filtro o búsqueda seleccionada.
+                        </td>
+                    </tr>
+                `;
+                document.getElementById("lbl-pagina-actual").innerText = "Página 1 de 1";
+                document.getElementById("btn-page-prev").disabled = true;
+                document.getElementById("btn-page-next").disabled = true;
+                return;
+            }
+
+            const maxPages = Math.ceil(totalRegistros / AppState.tablePageSize);
+            if (AppState.tablePage > maxPages) AppState.tablePage = maxPages;
+
+            const start = (AppState.tablePage - 1) * AppState.tablePageSize;
+            const end = start + AppState.tablePageSize;
+            const paginados = consumos.slice(start, end);
+
+            document.getElementById("lbl-pagina-actual").innerText = `Página ${AppState.tablePage} de ${maxPages}`;
+            document.getElementById("btn-page-prev").disabled = (AppState.tablePage === 1);
+            document.getElementById("btn-page-next").disabled = (AppState.tablePage === maxPages);
+
+            paginados.forEach(c => {
+                const tr = document.createElement("tr");
+                tr.className = "hover:bg-surface-variant/60 cursor-pointer transition-colors";
+                
+                tr.onclick = function() {
+                    if (AppState.filters.detalle.includes(c.detalle)) {
+                        AppState.filters.detalle = [];
+                    } else {
+                        AppState.filters.detalle = [c.detalle];
+                    }
+                    syncCheckboxes("dropdown-detalle", AppState.filters.detalle);
+                    updateDropdownLabels();
+                    applyCrossfilters();
+                };
+
+                const cuotaTxt = c.cuotaTotal > 1 ? `${String(c.cuotaActual).padStart(2, '0')}/${String(c.cuotaTotal).padStart(2, '0')}` : '01/01';
+                const badgeCuota = c.cuotaTotal > 1 ? 'bg-primary/20 text-primary border-primary/30' : 'bg-surface-variant text-on-surface-variant border-outline-variant/30';
+
+                tr.innerHTML = `
+                    <td class="p-3 font-medium whitespace-nowrap">${c.fecha}</td>
+                    <td class="p-3 font-bold text-on-background">${c.detalle}</td>
+                    <td class="p-3 text-center">
+                        <span class="${badgeCuota} border text-[10px] font-bold px-2 py-0.5 rounded-full">${cuotaTxt}</span>
+                    </td>
+                    <td class="p-3 text-right font-bold data-mono text-primary whitespace-nowrap">${formatMoneda(c.monto, false)}</td>
+                    <td class="p-3 whitespace-nowrap text-on-surface-variant">${c.entidad}</td>
+                    <td class="p-3 whitespace-nowrap font-medium">${c.pertenece}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function setKpiFilter(tipo) {
+            if (AppState.kpiFilter === tipo) {
+                AppState.kpiFilter = "TODOS";
+            } else {
+                AppState.kpiFilter = tipo;
+            }
+            rebuildDashboardUI();
+        }
+
+        function setTabVencimientos(tab) {
+            AppState.tabEstado = tab;
+            AppState.kpiFilter = tab;
+            rebuildDashboardUI();
+        }
+
+        function renderVencimientos(vencimientos) {
+            const container = document.getElementById("lista-vencimientos");
+            container.innerHTML = "";
+
+            if (AppState.kpiFilter === "INGRESOS") {
+                const listaIngresos = AppState.filtered.ingresos;
+                
+                if (listaIngresos.length === 0) {
+                    container.innerHTML = `
+                        <div class="col-span-full glass rounded-[1rem] p-6 text-center text-xs text-on-surface-variant">
+                            No se encontraron registros de Ingresos para este filtro.
+                        </div>
+                    `;
+                    return;
+                }
+
+                listaIngresos.forEach(ing => {
+                    const card = document.createElement("div");
+                    card.className = "interactive-card glass rounded-[1rem] shadow-soft p-3 flex flex-col justify-between border border-green-500/30 bg-green-500/5 transition-all";
+                    card.innerHTML = `
+                        <div class="flex items-center justify-between gap-2 mb-2">
+                            <div class="flex items-center gap-2 overflow-hidden">
+                                <div class="w-7 h-7 rounded-full bg-green-500/20 border border-green-500/30 flex items-center justify-center flex-shrink-0">
+                                    <span class="material-symbols-outlined text-green-400 text-xs">savings</span>
+                                </div>
+                                <div class="truncate">
+                                    <h3 class="text-xs font-bold text-on-background truncate">${ing.tipo}</h3>
+                                    <p class="text-[10px] text-on-surface-variant truncate">${ing.pertenece}</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex items-end justify-between border-t border-outline-variant/20 pt-2 mt-1">
+                            <span class="data-mono font-bold text-xs text-green-400">+${formatMoneda(ing.monto, false)}</span>
+                            <div class="bg-green-500/20 text-green-300 border border-green-500/30 text-[9px] font-bold px-2 py-0.5 rounded-full">
+                                <span>${ing.fecha}</span>
+                            </div>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+                return;
+            }
+
+            let listaFiltrada = vencimientos;
+            if (AppState.kpiFilter === "PENDIENTE" || AppState.tabEstado === "PENDIENTE") {
+                listaFiltrada = vencimientos.filter(v => v.estado !== "PAGADO");
+            } else if (AppState.kpiFilter === "PAGADO" || AppState.tabEstado === "PAGADO") {
+                listaFiltrada = vencimientos.filter(v => v.estado === "PAGADO");
+            }
+
+            if (listaFiltrada.length === 0) {
+                container.innerHTML = `
+                    <div class="col-span-full glass rounded-[1rem] p-6 text-center text-xs text-on-surface-variant">
+                        No hay elementos para mostrar en esta vista.
+                    </div>
+                `;
+                return;
+            }
+
+            listaFiltrada.forEach(v => {
+                const card = document.createElement("div");
+                const esPagado = v.estado === "PAGADO";
+                
+                card.className = `interactive-card glass rounded-[1rem] shadow-soft p-3 flex flex-col justify-between border ${esPagado ? 'border-green-500/30 bg-green-500/5' : 'border-transparent hover:border-primary/50'} transition-all`;
+                
+                const linkButtonHtml = v.linkDrive 
+                    ? `<a href="${v.linkDrive}" target="_blank" aria-label="Link Drive" class="text-primary p-1 hover:bg-primary/10 rounded-full transition-colors">
+                         <span class="material-symbols-outlined text-sm">link</span>
+                       </a>`
+                    : `<div class="w-6"></div>`;
+
+                const badgeEstadoClass = esPagado 
+                    ? "bg-green-500/20 text-green-300 border-green-500/40" 
+                    : "bg-red-500/20 text-red-300 border-red-500/30";
+
+                card.innerHTML = `
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2 overflow-hidden">
+                            <button onclick="toggleEstadoPago('${v.hojaOrigen}', ${v.rowId}, '${esPagado ? 'PENDIENTE' : 'PAGADO'}')" 
+                                    class="w-5 h-5 rounded-md border ${esPagado ? 'bg-green-500 border-green-400 text-black' : 'border-outline-variant/60 hover:border-primary'} flex items-center justify-center transition-all active:scale-90 flex-shrink-0"
+                                    title="${esPagado ? 'Marcar como Pendiente' : 'Marcar como Pagado'}">
+                                <span class="material-symbols-outlined text-[10px] font-bold">${esPagado ? 'check' : ''}</span>
+                            </button>
+
+                            <div class="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0">
+                                <span class="material-symbols-outlined text-primary text-xs">${v.icono || 'payments'}</span>
+                            </div>
+                            <div class="truncate">
+                                <h3 class="text-xs font-bold ${esPagado ? 'line-through text-on-surface-variant/60' : 'text-on-background'} truncate">${v.entidad}</h3>
+                                <p class="text-[10px] text-on-surface-variant truncate">${v.pertenece}</p>
+                            </div>
+                        </div>
+                        ${linkButtonHtml}
+                    </div>
+
+                    <div class="flex items-end justify-between border-t border-outline-variant/20 pt-2 mt-1">
+                        <span class="data-mono font-bold text-xs ${esPagado ? 'line-through text-on-surface-variant/60' : 'text-on-background'}">${formatMoneda(v.monto, false)}</span>
+                        <div class="${badgeEstadoClass} border text-[9px] font-bold px-2 py-0.5 rounded-full">
+                            <span>${esPagado ? 'PAGADO' : v.fechaVencimiento}</span>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        // FASE 11A: solo lectura. El toggle visual queda (UI intacta) pero no
+        // persiste: en lugar de google.script.run.marcarEstadoPago, solo se
+        // actualiza el estado local y se loguea que la escritura NO esta
+        // habilitada en esta fase (sin tocar el backend).
+        function toggleEstadoPago(hojaOrigen, rowId, nuevoEstado) {
+            const item = AppState.raw.vencimientos.find(v => v.hojaOrigen === hojaOrigen && v.rowId === rowId);
+            if (item) {
+                item.estado = nuevoEstado;
+                rebuildDashboardUI();
+            }
+            console.info("[FASE 11A solo lectura] toggleEstadoPago no persiste (escrituras fuera de alcance).");
+        }
+
+        function formatMoneda(valor, conDecimales = true) {
+            return '$' + valor.toLocaleString('es-AR', {
+                minimumFractionDigits: conDecimales ? 2 : 0,
+                maximumFractionDigits: conDecimales ? 2 : 0
+            });
+        }
+    </script>
+</body>
+</html>
