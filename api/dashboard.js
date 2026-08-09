@@ -122,7 +122,7 @@ export default async function handler(req, res) {
     // --- Consolidado -> vencimientos ---
     const consolidadoRows = await supabaseQuery(
       "consolidado",
-      "?select=remitente,asunto,monto_total,fecha_vencimiento,link_drive,pagado,pertenece&order=id.asc&limit=2000"
+      "?select=id,remitente,asunto,monto_total,fecha_vencimiento,link_drive,pagado,pertenece&order=id.asc&limit=2000"
     );
     const vencimientos = [];
     for (const r of consolidadoRows) {
@@ -141,7 +141,7 @@ export default async function handler(req, res) {
         pertenece: (r.pertenece || "David").toString(),
         // pagado BOOLEAN (FASE 10A) -> estado PAGADO/PENDIENTE.
         estado: r.pagado === true ? "PAGADO" : "PENDIENTE",
-        rowId: null,
+        rowId: r.id,
         hojaOrigen: "Consolidado",
         icono: iconoPorEntidad(entidadPara(remitenteRaw)),
       });
