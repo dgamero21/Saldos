@@ -70,10 +70,11 @@ def test_secrets_no_aparecen_en_codigo():
         capture_output=True,
         text=True,
     )
-    # Si git grep no encuentra nada, returncode=1
-    assert result.returncode != 0 or result.stdout.strip() == "", (
-        "Se encontró un JWT hardcodeado en el repo"
-    )
+    # Los tests que buscan JWT por patrón contienen el literal "eyJ" (como
+    # argumento de git grep), por lo que deben excluirse de los resultados.
+    archivos = result.stdout.strip().splitlines() if result.stdout.strip() else []
+    archivos_reales = [f for f in archivos if not f.startswith("tests/")]
+    assert archivos_reales == [], f"JWT hardcodeado en: {archivos_reales}"
 
 
 # ---------------------------------------------------------------------------
