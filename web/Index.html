@@ -384,12 +384,12 @@
         });
 
         // FASE 11A: fuente de datos via API Vercel (reemplaza google.script.run).
-        // El token se inyecta en window.API_TOKEN desde el deploy (Vercel reescribe
+        // El token se inyecta en <meta name="api-token"> desde el deploy (Vercel reescribe
         // este HTML al servir /); en local vacio -> la API responde 401 y se muestra
         // el error por onFatalError. Solo lectura: sin escrituras.
         async function fetchDashboardRawData() {
             try {
-                const token = (window.API_TOKEN || "").trim();
+                const token = (document.querySelector('meta[name="api-token"]')?.content || "").trim();
                 const res = await fetch("/api/dashboard", {
                     method: "GET",
                     headers: token ? { "Authorization": "Bearer " + token } : {}
