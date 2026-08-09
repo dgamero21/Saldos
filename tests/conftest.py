@@ -7,8 +7,11 @@ import pytest
 # bot_Saldo.py lee env vars a nivel de módulo (líneas 26-28).
 # Sin ellas el módulo no es importable para tests. Se inyectan dummies en la
 # sesión ANTES de cualquier import de bot_Saldo. No se toca producción (FASE 0).
-os.environ.setdefault("TELEGRAM_TOKEN", "test-token")
-os.environ.setdefault("TELEGRAM_CHAT_ID", "test-chat-id")
+# TELEGRAM_TOKEN/TELEGRAM_CHAT_ID se fuerzan (no setdefault): los tests
+# unitarios hardcodean "test-chat-id"/dummy en sus payloads y mockean la red;
+# en CI los secrets reales de Telegram rompían ese aislamiento (FASE 10B).
+os.environ["TELEGRAM_TOKEN"] = "test-token"
+os.environ["TELEGRAM_CHAT_ID"] = "test-chat-id"
 os.environ.setdefault("SHEET_ID", "test-sheet-id")
 os.environ.setdefault("GOOGLE_REFRESH_TOKEN", "test-refresh")
 os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")

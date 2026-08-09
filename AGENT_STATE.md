@@ -9,9 +9,9 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 10A — Web App: schema mínimo — **READY TO MIGRATE 2026-08-09**
-ESTADO:             PASS local — 92 passed, 60 skipped (pytest) + 13/13 JS (webhook)
-AGENTE ACTUAL:      esperando aprobación para ejecutar migración SQL en producción
+FASE ACTUAL:        FASE 10A — Web App: schema mínimo — **APPLIED + VALIDATED 2026-08-09**
+ESTADO:             MIGRATION PASS + VALIDATION PASS + TESTS 12 passed / 0 failed / 0 skipped
+AGENTE ACTUAL:      FASE 10B = NOT STARTED (requiere aprobación explícita)
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -104,14 +104,14 @@ AGENTE ACTUAL:      esperando aprobación para ejecutar migración SQL en produc
 - [x] Code Review PASS.
 - [x] Commit `6bfab73` + push a `main`.
 - [x] AGENT_STATE actualizado.
-- [ ] EJECUTAR MIGRACIÓN en producción (requiere aprobación + credenciales):
-      `psql "$SUPABASE_DB_URL" -f db/migracion_10a.sql`
-      Validar con: `psql "$SUPABASE_DB_URL" -f db/validate_10a.sql`
-      (esperado: columna boolean NOT NULL default false; pagados=0, total=112)
-      Rollback si falla: `psql "$SUPABASE_DB_URL" -f db/rollback_10a.sql`
-- [ ] Después de aplicar y validar: `pytest tests/ -k "db"` con credenciales
-      → los tests nuevos de `pagado` deben pasar. Luego avanzar a 10B
-      (API de lectura) SOLO con aprobación.
+- [x] EJECUTAR MIGRACIÓN en producción (aprobación explícita + credenciales):
+      `db/migracion_10a.sql` aplicado 2026-08-09 (PASS).
+      `db/validate_10a.sql` validado (PASS): columna boolean NOT NULL default
+      false; pagados=0, total=112.
+- [x] Después de aplicar y validar: `pytest tests/ -k "db or pagado" -v`
+      → **12 passed / 0 failed / 0 skipped**. Tests de `pagado` PASS.
+- [ ] Avanzar a 10B (API de lectura) SOLO con aprobación explícita.
+      FASE 10B = NOT STARTED.
 - NOTA: al momento de redactar esto NO hay credenciales disponibles en el
   entorno; no se pidió ni se pegó `SUPABASE_DB_URL` por instrucción del
   usuario.
@@ -372,7 +372,7 @@ AGENTE ACTUAL:      esperando aprobación para ejecutar migración SQL en produc
 - **RIESGOS**: Validación Storage real pendiente CI (requiere `SERVICE_ROLE_KEY`). Vercel requiere configuración manual.
 - **AUTO-AVANCE**: FASE 10 (Migración definitiva) — ahora sub-fases 10A–10J con gate manual por fase.
 
-### FASE 10A — Web App: schema mínimo — **READY TO MIGRATE 2026-08-09**
+### FASE 10A — Web App: schema mínimo — **APPLIED + VALIDATED 2026-08-09**
 - **ANALISTA**: auditoría DB 10A confirmó que `consolidado` NO tiene campo de
   estado (solo `fecha_vencimiento`) → `pagado` necesario. Confirmado bug
   latente: `categorias_fijas.activo` existía pero NO se respetaba en
@@ -395,6 +395,15 @@ AGENTE ACTUAL:      esperando aprobación para ejecutar migración SQL en produc
 - **GATE**: migración NO ejecutada por instrucción explícita del usuario
   (no pedir/pegar `SUPABASE_DB_URL`, no psql contra producción). Queda
   **READY TO MIGRATE** con comandos documentados en ESTADO ACTUAL.
+- **EJECUCIÓN (2026-08-09, aprobación explícita del usuario)**: conexión
+  previa validada con psycopg2 (`SELECT current_database(), current_user`
+  → postgres/postgres; pooler sa-east-1; PASS). Ejecutado
+  `db/migracion_10a.sql` (BEGIN/COMMIT OK). Ejecutado
+  `db/validate_10a.sql` (READ-ONLY): columna `pagado` = boolean, default
+  `false`, NOT NULL; total=112, FALSE=112, TRUE=0. Rollback NO ejecutado.
+  `pytest tests/ -k "db or pagado" -v` → **12 passed / 0 failed /
+  0 skipped**. Ningún otro dato/tabla/columna modificado; sin tocar
+  Sheets, Drive ni secrets. FASE 10B = NOT STARTED.
 
 ---
 
