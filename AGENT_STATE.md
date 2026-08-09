@@ -9,14 +9,16 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 9 — Integración / Regresión E2E — **PASS 2026-08-08**
-ESTADO:             PASS — suite completa 137 passed, 12 skipped
-AGENTE ACTUAL:      (auto-avance a FASE 10)
+FASE ACTUAL:        FASE 10A — Web App: schema mínimo — **READY TO MIGRATE 2026-08-09**
+ESTADO:             PASS local — 92 passed, 60 skipped (pytest) + 13/13 JS (webhook)
+AGENTE ACTUAL:      esperando aprobación para ejecutar migración SQL en producción
 ```
 
-**PROTOCOLO DE LOOP (actualizado 2026-08-08):**
+**PROTOCOLO DE LOOP (actualizado 2026-08-09):**
 - Sin aprobación manual entre fases. Avanzar automáticamente tras
-  TESTER=PASS + CODE REVIEW=PASS.
+  TESTER=PASS + CODE REVIEW=PASS, EXCEPTO en FASE 10: cada sub-fase
+  (10A–10J) y cualquier cambio que afecte producción (ALTER, cutover,
+  borrado Sheets/Drive/secrets) requiere aprobación explícita del usuario.
 - Detenerse solo para: operaciones irreversibles sobre producción,
   modificación/eliminación de datos, secretos faltantes, decisiones
   arquitectónicas con múltiples alternativas válidas, tests críticos
@@ -24,53 +26,95 @@ AGENTE ACTUAL:      (auto-avance a FASE 10)
   ambigüedad de producción.
 
 **OBJETIVO DE LA FASE:**
-- Ejecutar pruebas E2E completas que validen la integración de todos los
-  componentes migrados: Gmail → bot → Supabase (DB + Storage) → Telegram.
-- Validar regresión de mensajes Telegram, callbacks, PDFs, Gmail idempotencia,
-  deduplicación, concurrencia, fijos mensuales, EPEC, Storage signed URLs.
-- Ejecutar en CI con secrets reales (`SUPABASE_DB_URL`, `SUPABASE_URL`,
-  `SUPABASE_SERVICE_ROLE_KEY`).
+- Migrar la Web App (dashboard/administración) de Apps Script/Sheets a
+  Supabase: Telegram = canal operativo; Web App = dashboard/carga/
+  vencimientos/admin; Supabase = única fuente de datos; Google = solo
+  Gmail API. Implementar en sub-fases 10A–10J, cerrando cada una con
+  implementación/tests/commit/PASS.
+- 10A (ESTA): schema mínimo — `consolidado.pagado` (aditivo, backfill
+  FALSE, rollback preparado) + corregir que `categorias_fijas.activo`
+  sea respetado en alta (bot `obtener_tipos`/`obtener_fijos` y webhook
+  `obtenerCategorias`). SQL QUEDA PREPARADO, NO EJECUTADO en producción.
 
 **CAMBIOS REALIZADOS:**
-- `tests/test_fase9_e2e.py` — NUEVO: 16 tests E2E cubriendo:
-  1. Gmail PDF flow completo (mock)
-  2. Webhook helpers (JS)
-  3. Dedup consolidado / consumos / ingresos / mensaje_id
-  4. EPEC sin Storage
-  5. Fijos mensuales (gasto + ingreso)
-  6. Regresión formato Telegram
-  7. Concurrencia (consolidado, ingresos, consumos → 1 fila)
-  7. Regresión equivalencia consumos vs lógica anterior
-  8. Security: secrets no hardcodeados
-  9. RLS habilitado en todas las tablas
-  10. Storage bucket privado
-  11. Storage upload + signed URL + cleanup (skip si sin secrets REST)
-- `.github/workflows/fase9-e2e.yml` — NUEVO: workflow `workflow_dispatch`
-  que ejecuta tests E2E + suite regresión con secrets reales en CI.
-- Fix `tests/test_fase4_write.py`: mocks corregidos para `leer_config_completo`.
-- `AGENT_STATE.md` actualizado con log FASE 9.
+- `db/migracion_10a.sql` — NUEVO: `ALTER TABLE consolidado ADD COLUMN
+  IF NOT EXISTS pagado BOOLEAN NOT NULL DEFAULT FALSE` + COMMENT.
+  Aditivo, no rompe INSERTs de bot/webhook/import_data (no listan la
+  columna; DEFAULT FALSE). Backfill automático de las 112 filas.
+- `db/rollback_10a.sql` — NUEVO: `DROP COLUMN IF EXISTS pagado`
+  (pierde estado de pago; solo si 10A falla antes de PATCHes).
+- `db/validate_10a.sql` — NUEVO: validación post-aplicación 100%
+  READ-ONLY (columna existe con default `false`, backfill pagados=0/total
+  112, sin escrituras de prueba).
+- `db/schema.sql` — ACTUALIZADO: `pagado` en la definición de
+  `consolidado` (fuente de verdad); `db/README.md` — tabla actualizada.
+- `supabase_client.py` — `_obtener_categorias()` ahora filtra
+  `WHERE activo = TRUE` (categorías desactivadas ocultas en alta y sin
+  fijos, pero no se borran ni afectan históricos). Corrige bug latente
+  detectado en auditoría (el `activo` existía pero no se respetaba).
+- `api/webhook.js` — `obtenerCategorias()` filtra `activo=eq.true`
+  (teclado Telegram). Corrige el mismo bug en el webhook.
+- `api/webhook.test.mjs` — NUEVO test: URL de categorías incluye
+  `activo=eq.true`.
+- `tests/test_supabase_client.py` — NUEVO test: SQL de
+  `_obtener_categorias` filtra `WHERE activo = TRUE`.
+- `tests/test_db_connectivity.py` — NUEVOS tests (skip sin DB):
+  columna `pagado` existe (BOOLEAN NOT NULL DEFAULT false) y backfill
+  pagados=0 con total>0.
+- `tests/test_smoke.py` — blob hash de `api/webhook.js` actualizado a
+  FASE 10A (`fe7139e...`).
+- `.github/workflows/revisar-mails.yml` — FIX: indentación YAML rota en
+  main (la versión de HEAD era YAML INVALIDO, fallaba en línea 24); el
+  working tree la corrige. Verificado: estructura parseada idéntica
+  (sin cambios funcionales). Mantenimiento de CI incluido en 10A.
 
 **TESTS EJECUTADOS:**
-- `pytest tests/test_fase9_e2e.py` → **16 passed, 1 skipped** (Storage real skip sin secrets REST).
-- Suite completa con DB real: **137 passed, 12 skipped**.
-- Smoke test: 7/7 PASS (working tree limpio).
+- `pytest tests/` → **92 passed, 60 skipped** (post-commit, tree limpio;
+  los skipped son los DB/REST que requieren secrets, no ejecutados por
+  decisión del usuario).
+- `node --test api/webhook.test.mjs` → **13/13 PASS**.
+- SQL validado sintácticamente con sqlglot (dialect postgres): los 3
+  nuevos + schema/seed/rollback/validate existentes → OK.
+- YAML del workflow: parseado con PyYAML → VÁLIDO; estructura idéntica
+  a la intención original (verificado contra HEAD).
 
 **CODE REVIEW:**
-- PASS. Tests E2E cubren flujo completo Gmail→bot→Supabase→Telegram.
-- Webhook callbacks (MANUAL/INGRESO/CANCELAR) validados.
-- Deduplicación y concurrencia validadas contra DB real.
-- Regresión equivalencia consumos vs lógica anterior (FASE 4).
-- Security: secrets no hardcodeados, RLS, bucket privado.
-- EPEC sin Storage validado.
+- PASS. Cambio aditivo y reversible (rollback preparado). No toca
+  producción (SQL solo preparado). `pagado` con DEFAULT FALSE no rompe
+  los INSERTs existentes. Filtro `activo` corrige bug latente sin
+  alterar datos. Sin secretos involucrados. `cleanup_old.py` (script
+  DELETE contra producción) permanece SIN trackear y NO se ejecuta.
 
 **RIESGOS:**
-- Validación E2E real de Storage requiere `SUPABASE_SERVICE_ROLE_KEY` en CI
-  (pendiente ejecución en GitHub Actions).
-- Vercel: secrets `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` requieren
-  configuración manual en Dashboard Vercel.
+- MIGRACIÓN NO EJECUTADA: `db/migracion_10a.sql` debe aplicarse en
+  producción con aprobación explícita (comando en PRÓXIMA ACCIÓN).
+- El rollback pierde el estado de pago marcado en la Web App si 10A se
+  revierte después de que existan PATCHes (10C). Riesgo bajo en 10A.
+- Filtro `activo`: si en el futuro se quiere listar categorías
+  inactivas en admin (10E), habrá que agregar un query sin el filtro
+  (no rompe nada actual: las 8 categorías están todas activas).
 
 **PRÓXIMA ACCIÓN:**
-- Avanzar automáticamente a FASE 10 (Migración definitiva).
+- [x] SQL generado (migración + rollback + validate).
+- [x] SQL validado sintácticamente (sqlglot).
+- [x] Tests locales PASS (92 pytest + 13 JS).
+- [x] Compatibilidad de schema validada (columna aditiva, DEFAULT FALSE,
+      INSERTs existentes sin columna no se rompen).
+- [x] Rollback preparado (`db/rollback_10a.sql`).
+- [x] Code Review PASS.
+- [x] Commit `6bfab73` + push a `main`.
+- [x] AGENT_STATE actualizado.
+- [ ] EJECUTAR MIGRACIÓN en producción (requiere aprobación + credenciales):
+      `psql "$SUPABASE_DB_URL" -f db/migracion_10a.sql`
+      Validar con: `psql "$SUPABASE_DB_URL" -f db/validate_10a.sql`
+      (esperado: columna boolean NOT NULL default false; pagados=0, total=112)
+      Rollback si falla: `psql "$SUPABASE_DB_URL" -f db/rollback_10a.sql`
+- [ ] Después de aplicar y validar: `pytest tests/ -k "db"` con credenciales
+      → los tests nuevos de `pagado` deben pasar. Luego avanzar a 10B
+      (API de lectura) SOLO con aprobación.
+- NOTA: al momento de redactar esto NO hay credenciales disponibles en el
+  entorno; no se pidió ni se pegó `SUPABASE_DB_URL` por instrucción del
+  usuario.
 - `pytest tests/test_fase8_secrets.py` con `SUPABASE_DBPW`:
   **11/13 PASS**, 2 fallos esperados (REST/Storage requieren key real).
 - `pytest tests/` sin secrets: **91 passed, 41 skipped**.
@@ -326,7 +370,31 @@ AGENTE ACTUAL:      (auto-avance a FASE 10)
 - **TESTER**: `pytest tests/test_fase9_e2e.py` → **16 passed, 1 skipped**; suite completa: **137 passed, 12 skipped**; smoke 7/7 PASS.
 - **CODE REVIEW**: PASS. Flujo Gmail→bot→Supabase→Telegram cubierto. Webhook callbacks, dedup, concurrencia, regresión consumos, EPEC, security, RLS, bucket privado validados.
 - **RIESGOS**: Validación Storage real pendiente CI (requiere `SERVICE_ROLE_KEY`). Vercel requiere configuración manual.
-- **AUTO-AVANCE**: FASE 10 (Migración definitiva).
+- **AUTO-AVANCE**: FASE 10 (Migración definitiva) — ahora sub-fases 10A–10J con gate manual por fase.
+
+### FASE 10A — Web App: schema mínimo — **READY TO MIGRATE 2026-08-09**
+- **ANALISTA**: auditoría DB 10A confirmó que `consolidado` NO tiene campo de
+  estado (solo `fecha_vencimiento`) → `pagado` necesario. Confirmado bug
+  latente: `categorias_fijas.activo` existía pero NO se respetaba en
+  `obtener_tipos`/`obtener_fijos` (supabase_client) ni `obtenerCategorias`
+  (webhook).
+- **ARQUITECTO**: `pagado BOOLEAN NOT NULL DEFAULT FALSE` aditivo (no rompe
+  INSERTs existentes; backfill por DEFAULT). Filtro `activo=TRUE` en la capa
+  de categorías (alta y fijos) sin borrar ni afectar históricos. SQL con
+  migración + rollback + validate (100% read-only).
+- **IMPLEMENTADOR**: `db/migracion_10a.sql`, `db/rollback_10a.sql`,
+  `db/validate_10a.sql`; `schema.sql`/`README.md` actualizados;
+  `_obtener_categorias()` y `obtenerCategorias()` filtran activas; tests
+  nuevos (SQL filtra activo, columna `pagado`, webhook `activo=eq.true`);
+  smoke blob actualizado; fix YAML de `revisar-mails.yml` (main tenía YAML
+  inválido).
+- **TESTER**: 92 passed, 60 skipped (pytest) + 13/13 JS; SQL validado con
+  sqlglot; YAML validado con PyYAML (estructura idéntica a HEAD).
+- **CODE REVIEW**: PASS. Aditivo y reversible; producción NO tocada (SQL
+  solo preparado); sin secretos; `cleanup_old.py` sin trackear.
+- **GATE**: migración NO ejecutada por instrucción explícita del usuario
+  (no pedir/pegar `SUPABASE_DB_URL`, no psql contra producción). Queda
+  **READY TO MIGRATE** con comandos documentados en ESTADO ACTUAL.
 
 ---
 
