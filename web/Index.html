@@ -320,7 +320,7 @@
                         <select id="ingreso-tipo" class="flex-1 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50">
                             <option value="" disabled selected>Categoría de ingreso</option>
                         </select>
-                        <input id="ingreso-monto" type="number" step="0.01" min="0.01" placeholder="Monto" class="w-32 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right">
+                        <input id="ingreso-monto" type="text" inputmode="numeric" placeholder="Monto" class="w-32 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right" oninput="formatMonedaInput(this)" value="">
                         <button onclick="crearIngreso()" class="bg-primary text-on-primary font-bold px-4 py-2 rounded-xl text-sm hover:bg-primary/80 active:scale-95 transition-all flex-shrink-0">Agregar</button>
                     </div>
                     <p id="ingreso-msg" class="text-[10px] text-on-surface-variant hidden"></p>
@@ -338,7 +338,7 @@
                             <option value="true">Ingreso Fijo</option>
                         </select>
                         <input id="fijo-tipo" type="text" placeholder="Nombre (ej: ALQUILER)" class="flex-1 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50">
-                        <input id="fijo-monto" type="number" step="0.01" min="0.01" placeholder="Monto fijo" class="w-28 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right">
+                        <input id="fijo-monto" type="text" inputmode="numeric" placeholder="Monto fijo" class="w-28 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right" oninput="formatMonedaInput(this)" value="">
                         <button onclick="crearFijo()" class="bg-primary text-on-primary font-bold px-4 py-2 rounded-xl text-sm hover:bg-primary/80 active:scale-95 transition-all flex-shrink-0">Guardar</button>
                         <button onclick="toggleFijosForm()" class="text-on-surface-variant hover:text-primary text-sm font-bold">Cancelar</button>
                     </div>
@@ -375,6 +375,25 @@
             chartDetalleInstance: null,
             chartDonutInstance: null
         };
+
+        const mesesNombres = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+        // Helper: formatea input monetario mientras se escribe (ej: 800000 -> $ 800.000)
+        function formatMonedaInput(input) {
+            let value = input.value.replace(/[^0-9]/g, '');
+            if (value === '') {
+                input.value = '';
+                return;
+            }
+            const num = parseInt(value, 10);
+            input.value = '$ ' + num.toLocaleString('es-AR');
+            // Guardar valor numérico real en dataset para envío al backend
+            input.dataset.rawValue = num;
+        }
+
+        function getMonedaInputValue(input) {
+            return input.dataset.rawValue ? parseInt(input.dataset.rawValue, 10) : 0;
+        }
 
         const mesesNombres = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -446,9 +465,12 @@
                 applyCrossfilters();
             });
 
-            document.getElementById("filter-toggle-btn").addEventListener("click", function() {
+            document.getElementById("filter-toggle-btn").addEventListener("click", function(e) {
+                e.stopPropagation();
                 const panel = document.getElementById("filter-panel");
-                panel.classList.toggle("hidden");
+                if (panel) {
+                    panel.classList.toggle("hidden");
+                }
             });
 
             document.getElementById("clear-filters-btn").addEventListener("click", function() {
@@ -1277,7 +1299,7 @@
         // --- Ingreso Manual ---
         async function crearIngreso() {
             const tipo = document.getElementById("ingreso-tipo").value;
-            const monto = parseFloat(document.getElementById("ingreso-monto").value);
+            const monto = getMonedaInputValue(document.getElementById("ingreso-monto"));
             const msgEl = document.getElementById("ingreso-msg");
             if (!tipo || isNaN(monto) || monto <= 0) {
                 msgEl.textContent = "Completá categoría y monto válido";
@@ -1298,6 +1320,7 @@
                 msgEl.classList.remove("hidden", "text-red-400");
                 msgEl.classList.add("text-green-400");
                 document.getElementById("ingreso-monto").value = "";
+                document.getElementById("ingreso-monto").dataset.rawValue = "";
                 // Recargar fijos para actualizar selector de ingresos
                 await cargarFijos();
                 // Recargar dashboard para ver el ingreso
@@ -1318,7 +1341,9 @@
             const isHidden = form.classList.toggle("hidden");
             if (!isHidden) {
                 document.getElementById("fijo-tipo").value = "";
-                document.getElementById("fijo-monto").value = "";
+                const montoInput = document.getElementById("fijo-monto");
+                montoInput.value = "";
+                montoInput.dataset.rawValue = "";
                 fijosEditandoId = null;
             }
         }
@@ -1378,7 +1403,7 @@
 
         async function crearFijo() {
             const tipo = document.getElementById("fijo-tipo").value.trim();
-            const monto = parseFloat(document.getElementById("fijo-monto").value);
+            const monto = getMonedaInputValue(document.getElementById("fijo-monto"));
             const es_ingreso = document.getElementById("fijo-es-ingreso").value === "true";
             if (!tipo || isNaN(monto) || monto <= 0) {
                 alert("Completá tipo y monto válido");
@@ -1404,7 +1429,9 @@
         function editarFijo(id, tipo, monto, es_ingreso, activo) {
             document.getElementById("fijo-es-ingreso").value = es_ingreso ? "true" : "false";
             document.getElementById("fijo-tipo").value = tipo;
-            document.getElementById("fijo-monto").value = monto;
+            const montoInput = document.getElementById("fijo-monto");
+            montoInput.value = '$ ' + monto.toLocaleString('es-AR');
+            montoInput.dataset.rawValue = monto;
             fijosEditandoId = id;
             document.getElementById("fijos-form").classList.remove("hidden");
             // Cambiar botón a "Actualizar"
@@ -1415,7 +1442,7 @@
 
         async function actualizarFijo(id) {
             const tipo = document.getElementById("fijo-tipo").value.trim();
-            const monto = parseFloat(document.getElementById("fijo-monto").value);
+            const monto = getMonedaInputValue(document.getElementById("fijo-monto"));
             const es_ingreso = document.getElementById("fijo-es-ingreso").value === "true";
             const activo = true; // Simplificación: siempre activo al editar
             if (!tipo || isNaN(monto) || monto <= 0) {
