@@ -9,9 +9,10 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 10A — Web App: schema mínimo — **APPLIED + VALIDATED 2026-08-09**
-ESTADO:             MIGRATION PASS + VALIDATION PASS + TESTS 12 passed / 0 failed / 0 skipped
-AGENTE ACTUAL:      FASE 10B = NOT STARTED (requiere aprobación explícita)
+FASE ACTUAL:        FASE 10B — Validación post-10A — **PASS 2026-08-09**
+ESTADO:             Suite local 144 passed / 7 skipped; CI FASE 9 E2E 17 passed
+                    + regresión completa 111 passed; webhook 13/13; toggle pagado OK
+AGENTE ACTUAL:      FASE 10C = NOT STARTED (requiere aprobación explícita)
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -404,6 +405,40 @@ AGENTE ACTUAL:      FASE 10B = NOT STARTED (requiere aprobación explícita)
   `pytest tests/ -k "db or pagado" -v` → **12 passed / 0 failed /
   0 skipped**. Ningún otro dato/tabla/columna modificado; sin tocar
   Sheets, Drive ni secrets. FASE 10B = NOT STARTED.
+
+### FASE 10B — Validación post-10A — **PASS 2026-08-09**
+- **VALIDACIÓN EJECUTADA**: suite completa local **144 passed / 7 skipped
+  (1 smoke working-tree esperado)**; CI FASE 9 E2E (workflow_dispatch)
+  **17 passed** + regresión completa **111 passed, 0 failed**; webhook
+  `node --test api/webhook.test.mjs` **13/13 PASS**; toggle
+  PAGADO/PENDIENTE validado sobre `consolidado.pagado` en transacción
+  ROLLBACK (TRUE→FALSE OK, sin cambios persistidos; estado real 112
+  FALSE / 0 TRUE).
+- **FALLOS LATENTES CORREGIDOS (solo tests/infra CI, sin tocar
+  producción)**:
+  1. `tests/conftest.py`: `TELEGRAM_CHAT_ID`/`TELEGRAM_TOKEN` pasan a
+     forzarse a dummy (`test-chat-id`/`test-token`). En CI el secret real
+     hacía que el payload de prueba (`test-chat-id`) se descartara →
+     `test_telegram_gasto_manual_no_escribe_en_sheets` y
+     `test_telegram_ingreso_manual_usa_supabase` fallaban. Ahora aislados.
+  2. `tests/test_fase8_secrets.py::test_secrets_no_aparecen_en_codigo`:
+     `git grep -l eyJ` encontraba el literal `"eyJ"` en los propios tests
+     (solo corría en CI por `skipif_no_rest`). Se excluyen archivos
+     `tests/` (mismo patrón que `test_e2e_secrets_no_hardcodeados`).
+  3. `tests/test_fase8_secrets.py` + `tests/test_fase9_e2e.py`
+     (storage post-delete): tras el DELETE, la signed URL puede seguir
+     sirviendo por el CDN (eventual consistency; confirmado: 0 objetos
+     residuales en `storage.objects`). Se agrega reintento acotado
+     (10×2s) exigiendo 400/404. No es bug de producción.
+  4. `.github/workflows/fase9-e2e.yml` y `fase8-validacion.yml`: checkout
+     shallow (`fetch-depth: 1`) hacía fallar
+     `test_repo_head_es_descendiente_del_baseline` (baseline d34fb56 no
+     presente). Se agrega `fetch-depth: 0`.
+- **COMMITS (main)**: `f068342` (conftest + AGENT_STATE 10A),
+  `67775f1` (secrets grep), `c9f29e4` (storage retry), `3b72bb1` (CI
+  fetch-depth 0). Working tree limpio. `cleanup_old.py` sin trackear.
+- **NO EJECUTADO**: cutover definitivo, borrado de Sheets/Drive,
+  retiro de secrets. FASE 10C = NOT STARTED (requiere aprobación).
 
 ---
 
