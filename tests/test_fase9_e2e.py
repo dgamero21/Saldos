@@ -37,6 +37,7 @@ en el entorno, como en CI):
 """
 import os
 import sys
+import time
 from datetime import date, datetime
 from uuid import uuid4
 
@@ -750,6 +751,12 @@ def test_e2e_storage_upload_signed_cleanup():
     )
     assert del_resp.status_code in (200, 204, 404)
 
-    # Verificar cleanup
+    # Verificar cleanup (el CDN puede tardar unos segundos en dejar de
+    # servir la signed URL tras el DELETE; se reintenta por lo acotado)
     get_resp = requests.get(res["signed_url"], timeout=20)
+    intentos = 0
+    while get_resp.status_code in (200, 304) and intentos < 10:
+        time.sleep(2)
+        intentos += 1
+        get_resp = requests.get(res["signed_url"], timeout=20)
     assert get_resp.status_code in (400, 404)

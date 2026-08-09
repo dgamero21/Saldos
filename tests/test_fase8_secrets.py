@@ -12,6 +12,7 @@ Si los secrets no están presentes, los tests se SKIPean (no FAIL).
 """
 import os
 import sys
+import time
 from uuid import uuid4
 
 import pytest
@@ -227,8 +228,15 @@ def test_storage_upload_signed_url_acceso_y_cleanup():
     )
     assert del_resp.status_code in (200, 204, 404), f"Delete HTTP {del_resp.status_code}"
 
-    # 4. Verificar que no queda residuo
+    # 4. Verificar que no queda residuo. El DELETE es inmediato en
+    #    storage.objects, pero el CDN puede seguir sirviendo la signed URL
+    #    por unos segundos (eventual consistency), así que se reintenta.
     get_resp = requests.get(signed_url, timeout=20)
+    intentos = 0
+    while get_resp.status_code in (200, 304) and intentos < 10:
+        time.sleep(2)
+        intentos += 1
+        get_resp = requests.get(signed_url, timeout=20)
     assert get_resp.status_code in (400, 404), (
         f"El PDF de prueba sigue accesible tras eliminar (HTTP {get_resp.status_code})"
     )
