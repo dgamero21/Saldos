@@ -9,10 +9,16 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 10B — Validación post-10A — **PASS 2026-08-09**
-ESTADO:             Suite local 144 passed / 7 skipped; CI FASE 9 E2E 17 passed
-                    + regresión completa 111 passed; webhook 13/13; toggle pagado OK
-AGENTE ACTUAL:      FASE 10C = NOT STARTED (requiere aprobación explícita)
+FASE ACTUAL:        FASE 10D — Cierre de migracion — **PASS 2026-08-09**
+ESTADO:             Suite local 145 passed / 7 skipped; smoke 7/7 PASS; DB
+                    verificacion read-only OK (34 links Drive historicos
+                    intactos, 0 mutados a storage://).
+AGENTE ACTUAL:      FASE 10D = PASS. Migracion Sheets/Drive -> Supabase
+                    cerrada: bot sin dependencias funcionales de Drive,
+                    Storage es el unico destino de PDFs nuevos. Los 34 PDFs
+                    historicos de Drive se conservan en Drive (Opcion B
+                    aprobada). GOOGLE_*/SHEET_ID y Sheets conservadas
+                    (Gmail las necesita); retiro para fase futura.
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -439,6 +445,72 @@ AGENTE ACTUAL:      FASE 10C = NOT STARTED (requiere aprobación explícita)
   fetch-depth 0). Working tree limpio. `cleanup_old.py` sin trackear.
 - **NO EJECUTADO**: cutover definitivo, borrado de Sheets/Drive,
   retiro de secrets. FASE 10C = NOT STARTED (requiere aprobación).
+
+### FASE 10C — Bot sin fallback Sheets/Drive — **PASS 2026-08-09**
+- **ANALISTA**: relevado el alcance del cutover (lecturas/escrituras/PDFs del
+  bot) y el estado de `bot_Saldo.py`/`supabase_client.py` previo al cutover:
+  fallback explícito a Sheets en lecturas (`_leer_con_supabase` devolvía
+  `(False, None)` y caía a `get_gc().open_by_key(SHEET_ID)`) y fallback a Drive
+  en `subir_pdf` (capturaba `SupabaseStorageError` y llamaba `subir_a_drive`).
+- **ARQUITECTO**: eliminar TODOS los fallbacks del bot. Un fallo de lectura
+  lanza `SupabaseReadError` (sin caer a Sheets); un fallo de Storage propaga
+  `SupabaseStorageError` (sin caer a Drive). Renombrar `guardar_en_sheet` ->
+  `guardar_consolidado`, `guardar_o_actualizar_consumos_sheet` ->
+  `guardar_consumos` y quitar el parámetro `ws` de `procesar_fijos_mensuales`,
+  `leer_config_completo`, `es_registro_duplicado`. Eliminar `get_gc`,
+  `get_drive_service`, `subir_a_drive`, `obtener_valor_clave_flexible` y los
+  imports de `gspread`/`MediaIoBaseUpload`. Conservar `GOOGLE_*`/`SHEET_ID`
+  (Gmail aún los necesita) y Sheets (no se borra aún).
+- **IMPLEMENTADOR**: `bot_Saldo.py` migrado (-317 líneas de fallback/Sheets);
+  `supabase_client.py` docstrings/errores actualizados a FASE 10C (sin
+  fallback). Tests sincronizados: removidos mocks de `get_gc`/`subir_a_drive`
+  y clases `_WS`/`_Sheet`/`_GC`/`FakeGC`/`WSConfig`/`Sheet`/`GC` sin uso en
+  `tests/test_fase3_integracion.py`, `test_fase4_write.py`,
+  `test_fase5_gmail.py`, `test_fase6_storage.py`, `test_fase9_e2e.py`,
+  `test_smoke.py`, `test_dedup_schema.py`, `test_fase4_integracion.py`.
+- **TESTER**: suite completa **144 passed / 7 skipped / 1 smoke esperado**
+  (working tree antes de commitear); post-fix de los 2 tests de `subir_a_drive`
+  remanentes en `test_fase6_storage.py` -> **todos verdes**. `py_compile` OK.
+- **CODE REVIEW**: PASS. Sin secretos hardcodeados; `GOOGLE_*`/`SHEET_ID`
+  conservados; Sheets y Drive NO borrados; `cleanup_old.py` sin trackear.
+- **COMMITS (main)**: `d61385a` (FASE 10C: bot usa Supabase Storage como unico
+  destino; tests sincronizados).
+
+### FASE 10D — Cierre de migracion (Opcion B) — **PASS 2026-08-09**
+- **DECISION**: Opcion B aprobada — los 34 PDFs historicos de Drive se
+  conservan en Drive y NO se migran a Storage por ahora. No se borran PDFs de
+  Drive, no se mutan los 34 links historicos, no se retiran `GOOGLE_*`
+  (Gmail los necesita), no se retiran otros secrets, no se borra Sheets.
+- **VERIFICACION DB (READ-ONLY, `SUPABASE_DB_URL`)** contra produccion:
+  - `total_consolidado = 112` (igual al baseline migrado en FASE 2).
+  - `link_drive_drive_hist = 34` (los 34 historicos con link de Drive).
+  - `link_drive_storage_refs = 0` (NINGUNO mutado a `storage://`; consistente
+    con Opcion B: la migracion historica no se ejecuto).
+  - `drive_no_formato_esperado = 0` (los 34 mantienen formato
+    `https://drive.google.com/file/d/...`, len 83, 34 distinct — intactos sin
+    corrupcion ni duplicados colisionados).
+  - `link_drive_vacios = 78` (registros sin PDF, esperado).
+- **DEPENDENCIAS DRIVE**: confirmado por `grep` que `bot_Saldo.py` NO tiene
+  referencias a `drive`/`get_gc`/`gspread`/`SHEET_ID`/`MediaIoBaseUpload`/
+  `open_by_key`. `subir_pdf` solo llama a `supabase_client.subir_pdf_storage`
+  (Storage exclusivo; sin fallback a Drive). El webhook `api/webhook.js` no
+  toca PDFs. `gspread` permanece en `requirements.txt`/CI como dependencia
+  instalada sin uso (su retiro es cambio independiente, fuera de 10D).
+- **PDFs NUEVOS**: van unicamente a `storage://pdfs/<path>` + signed URL
+  temporal (Telegram); `consolidado.link_drive` guarda la ref estable. EPEC
+  conserva el caso especial sin almacenamiento. Hoy `link_drive_storage_refs=0`
+  porque no hubo resumenes nuevos post-FASE 6.
+- **TESTER**: suite completa **145 passed / 7 skipped / 0 failed**;
+  `pytest tests/test_smoke.py` **7/7 PASS** (working tree limpio:
+  solo `cleanup_old.py` untracked, fuera del guard).
+- **CODE REVIEW**: PASS. Solo se leyo la DB (READ-ONLY); no se borraron PDFs
+  de Drive; no se mutaron los 34 links historicos; no se eliminaron
+  `GOOGLE_*`/secrets ni Sheets.
+- **CIERRE**: migracion Sheets/Drive -> Supabase **cerrada** en lo funcional
+  (bot opera 100% sobre Supabase Storage/DB). Quedan pendientes de fase
+  futura (fuera de 10D): retirar `gspread` de `requirements.txt`+CI, retirar
+  `GOOGLE_*`/`SHEET_ID` (cuando Gmail ya no los necesite) y borrado de
+  Sheets / Drive PDFs (los 34 historicos).
 
 ---
 
