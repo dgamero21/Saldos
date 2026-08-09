@@ -6,7 +6,8 @@ Verifica con mocks:
   - ID legacy reproducible (mismo formato que el bot).
   - Errores explícitos '[SUPABASE WRITE ERROR]' / SupabaseNotConfiguredError.
   - Sheets NO recibe escrituras accidentales (FASE 10C: las firmas ya no
-    reciben ws y el bot no importa gspread).
+    reciben ws y el bot no importa gspread; FASE 10E: gspread retirado de
+    requirements.txt y CI).
   - es_registro_duplicado usa Supabase (lectura) y lanza SupabaseReadError
     si Supabase no está disponible o falla (sin fallback a la hoja).
 """

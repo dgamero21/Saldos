@@ -9,16 +9,15 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 10D — Cierre de migracion — **PASS 2026-08-09**
-ESTADO:             Suite local 145 passed / 7 skipped; smoke 7/7 PASS; DB
-                    verificacion read-only OK (34 links Drive historicos
-                    intactos, 0 mutados a storage://).
-AGENTE ACTUAL:      FASE 10D = PASS. Migracion Sheets/Drive -> Supabase
-                    cerrada: bot sin dependencias funcionales de Drive,
-                    Storage es el unico destino de PDFs nuevos. Los 34 PDFs
-                    historicos de Drive se conservan en Drive (Opcion B
-                    aprobada). GOOGLE_*/SHEET_ID y Sheets conservadas
-                    (Gmail las necesita); retiro para fase futura.
+FASE ACTUAL:        FASE 10E — Retiro de `gspread` (deps) — **PASS 2026-08-09**
+ESTADO:             Suite local 144 passed / 7 skipped / 1 smoke esperado
+                    (working tree antes de commitear); py_compile OK. Cero
+                    imports de gspread en *.py (relevado por grep).
+AGENTE ACTUAL:      FASE 10E = PASS. `gspread` retirado de requirements.txt
+                    y de la instalacion del workflow de produccion
+                    (revisar-mails.yml). No toca produccion/datos/secrets.
+                    Pendiente fase futura: retirar GOOGLE_*/SHEET_ID (Gmail
+                    los necesita) y borrado de Sheets/Drive PDFs.
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -511,6 +510,29 @@ AGENTE ACTUAL:      FASE 10D = PASS. Migracion Sheets/Drive -> Supabase
   futura (fuera de 10D): retirar `gspread` de `requirements.txt`+CI, retirar
   `GOOGLE_*`/`SHEET_ID` (cuando Gmail ya no los necesite) y borrado de
   Sheets / Drive PDFs (los 34 historicos).
+
+### FASE 10E — Retiro de `gspread` (deps/CI) — **PASS 2026-08-09**
+- **ANALISTA**: grep confirmo 0 imports de `gspread` en *.py (ni estaticos
+  `import gspread`/`from gspread` ni dinamicos `__import__`/`importlib`/uso
+  cualificado `gspread.`). Usos vivos restantes: `requirements.txt` (L4),
+  `pip install` del workflow de produccion `revisar-mails.yml` (L31), y un
+  comentario obsoleto en `tests/test_fase4_write.py`. No hay usos runtime.
+- **ARQUITECTO**: retiro puramente de dependencias/CI — no toca codigo
+  funcional, datos, secrets ni produccion. `gspread` solo se iba a usar para
+  Google Sheets, ya removido del bot en FASE 10C. `requirements-dev.txt`
+  incluye `-r requirements.txt`, asi que los tests dejan de arrastrar
+  `gspread` tambien. `google-auth`/`google-api-python-client` permanecen
+  (Gmail API los usa).
+- **IMPLEMENTADOR**: `requirements.txt` sin la linea `gspread`;
+  `revisar-mails.yml` sin `gspread` en el `pip install`; comentario de
+  `tests/test_fase4_write.py` actualizado (10E).
+- **TESTER**: `py_compile bot_Saldo.py supabase_client.py` OK; suite
+  completa **144 passed / 7 skipped / 1 failed** (unico fallo =
+  `test_working_tree_limpio_para_produccion`, esperado antes de commitear).
+- **CODE REVIEW**: PASS. No se toca produccion, datos ni secrets. Sin risk
+  para Gmail (no usa gspread). Cambio revertible (rollback = re-anadir la
+  linea). `cleanup_old.py` sigue sin trackear.
+- **GATE**: no requerido (no afecta produccion).
 
 ---
 
