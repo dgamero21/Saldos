@@ -135,16 +135,6 @@ def test_e2e_gmail_pdf_flow_mock(monkeypatch):
     tag = f"FASE9GMAIL_{uuid4().hex[:8]}"
     _cleanup_test_data(tag)
     try:
-        class FakeWS:
-            def get_all_values(self): return [["Hora_Ejecucion", "12"]]
-            def get_all_records(self):
-                return [{"Hora_Ejecucion": "12"}]
-        class FakeSheet:
-            def worksheet(self, name): return FakeWS()
-        class FakeGC:
-            def open_by_key(self, key): return FakeSheet()
-
-        monkeypatch.setattr(bot_Saldo, "get_gc", lambda: FakeGC())
         monkeypatch.setattr(bot_Saldo, "obtener_o_crear_label", lambda n: "LBL")
         monkeypatch.setattr(
             bot_Saldo,
@@ -199,7 +189,7 @@ def test_e2e_gmail_pdf_flow_mock(monkeypatch):
 
         guardados = []
         monkeypatch.setattr(
-            bot_Saldo, "guardar_en_sheet",
+            bot_Saldo, "guardar_consolidado",
             lambda *a: guardados.append(a) or "insertado",
         )
 
@@ -211,16 +201,17 @@ def test_e2e_gmail_pdf_flow_mock(monkeypatch):
         assert called.get('buscar') == ("bna", "Resumen", False)
         assert called.get('extraer') == f"msg_{tag}"
         assert len(guardados) == 1
-        # guardados captura: (ws, fecha_raw, asunto, monto, vto, remitente, link_drive)
+        # guardados captura: (fecha_raw, asunto, monto, vto, remitente, link_storage)
         args = guardados[0]
-        # args[1] = fecha_raw (RFC2822), args[2] = asunto, args[3] = monto, args[4] = vto, args[5] = remitente, args[6] = link
-        # La fecha se formatea dentro de guardar_en_sheet, asi que aqui viene cruda
-        assert "Aug" in args[1] or "08" in args[1]  # fecha raw contiene mes
-        assert args[2] == "Resumen"   # asunto
-        assert float(args[3]) == 1000.0  # monto
-        assert args[4] == _today_ar()  # vto ya formateado
-        assert args[5] == "bna"        # remitente
-        assert args[6].startswith("storage://")  # link_drive
+        # args[0] = fecha_raw (RFC2822), args[1] = asunto, args[2] = monto,
+        # args[3] = vto, args[4] = remitente, args[5] = link_storage
+        # La fecha se formatea dentro de guardar_consolidado, asi que aqui viene cruda
+        assert "Aug" in args[0] or "08" in args[0]  # fecha raw contiene mes
+        assert args[1] == "Resumen"   # asunto
+        assert float(args[2]) == 1000.0  # monto
+        assert args[3] == _today_ar()  # vto ya formateado
+        assert args[4] == "bna"        # remitente
+        assert args[5].startswith("storage://")  # link_storage
         assert enviados[0].startswith("📩 Resumen Procesado")
         assert "msg_" in str(called.get('registrar', ''))
     finally:
@@ -378,16 +369,6 @@ def test_e2e_epec_sin_storage(monkeypatch):
             return "link", "telegram"
         monkeypatch.setattr(bot_Saldo, "subir_pdf", fake_subir_pdf)
 
-        class FakeWS:
-            def get_all_values(self): return [["Hora_Ejecucion", "12"]]
-            def get_all_records(self):
-                return [{"Hora_Ejecucion": "12"}]
-        class FakeSheet:
-            def worksheet(self, name): return FakeWS()
-        class FakeGC:
-            def open_by_key(self, key): return FakeSheet()
-
-        monkeypatch.setattr(bot_Saldo, "get_gc", lambda: FakeGC())
         monkeypatch.setattr(bot_Saldo, "obtener_o_crear_label", lambda n: "LBL")
         monkeypatch.setattr(
             bot_Saldo,
@@ -417,7 +398,7 @@ def test_e2e_epec_sin_storage(monkeypatch):
         monkeypatch.setattr(bot_Saldo, "registrar_y_marcar_mensaje_procesado", lambda *a: None)
         guardados = []
         monkeypatch.setattr(
-            bot_Saldo, "guardar_en_sheet",
+            bot_Saldo, "guardar_consolidado",
             lambda *a: guardados.append(a) or "insertado",
         )
         monkeypatch.setattr(bot_Saldo, "enviar_telegram", lambda msg: None)
@@ -426,8 +407,8 @@ def test_e2e_epec_sin_storage(monkeypatch):
 
         # subir_pdf NO debe llamarse para EPEC
         assert 'called' not in subidas
-        # link_drive en guardados debe ser "" (indice 6 = args[6] = link_drive)
-        assert guardados[0][6] == ""
+        # link_storage en guardados debe ser "" (indice 5 = args[5] = link_storage)
+        assert guardados[0][5] == ""
     finally:
         _cleanup_test_data(tag)
 
@@ -447,51 +428,21 @@ def test_e2e_fijos_mensuales():
     try:
         # Llamar a procesar_fijos_mensuales directamente con mocks
         import bot_Saldo
-        
+
         # Mock de obtener_fijos en supabase_client
         import supabase_client
         original_obtener_fijos = supabase_client.obtener_fijos
-        
+
         def mock_obtener_fijos():
             return (
                 [{"tipo": f"FIJO {tag}", "monto": 10000.0}],
                 [{"tipo": f"ING {tag}", "monto": 170000.0}],
             )
-        
+
         supabase_client.obtener_fijos = mock_obtener_fijos
         try:
-            class FakeWS:
-                def get_all_values(self): return [["Hora_Ejecucion", "12"]]
-                def get_all_records(self):
-                    return [{"Hora_Ejecucion": "12", "SUELDO": "170000",
-                             "ALQUILER": "10000", "NIÑERA": "0"}]
-            
-            class FakeSheet:
-                def worksheet(self, name): return FakeWS()
-            class FakeGC:
-                def open_by_key(self, key): return FakeSheet()
-            
-            original_get_gc = bot_Saldo.get_gc
-            bot_Saldo.get_gc = lambda: FakeGC()
-            
-            # Need to pass a fake ws_consumos (not None) and ws_ingresos
-            ws_consumos_fake = type('WS', (), {
-                'get_all_values': lambda self: [["Hora_Ejecucion", "12"]],
-                'get_all_records': lambda self: [{"Hora_Ejecucion": "12"}],
-                'worksheet': lambda self, name: type('WS', (), {
-                    'get_all_values': lambda self: [["Hora_Ejecucion", "12"]]
-                })()
-            })()
-            
-            ws_ingresos_fake = type('WS', (), {
-                'get_all_values': lambda self: [["Hora_Ejecucion", "12"]]
-            })()
-            
-            try:
-                bot_Saldo.procesar_fijos_mensuales(FakeWS(), ws_consumos_fake, ws_ingresos_fake)
-            finally:
-                bot_Saldo.get_gc = original_get_gc
-            
+            bot_Saldo.procesar_fijos_mensuales()
+
             # Verificar que se insertaron
             filas_g = _fetch(
                 "SELECT count(*) FROM consumos WHERE remitente = 'Fijo Config' AND detalle LIKE %s",
@@ -600,7 +551,7 @@ def test_e2e_concurrencia_consumos():
 # ---------------------------------------------------------------------------
 
 def test_e2e_regresion_consumos_equivalencia():
-    """Consumos: estado final DB == lógica anterior (guardar_o_actualizar_consumos_sheet)."""
+    """Consumos: estado final DB == lógica anterior (guardar_consumos)."""
     tag = f"FASE9REG_{uuid4().hex[:8]}"
     _cleanup_test_data(tag)
     try:

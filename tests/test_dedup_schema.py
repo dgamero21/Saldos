@@ -1,8 +1,7 @@
 """Regresión FASE 1: deduplicación 1:1 entre el código del bot y el schema SQL.
 
-Verifica que las claves de dedup que genera el código (guardar_en_sheet,
-guardar_o_actualizar_consumos_sheet, procesar_mensajes_telegram,
-procesar_fijos_mensuales) coinciden con las columnas del UNIQUE INDEX del
+Verifica que las claves de dedup que genera el código (guardar_consolidado,
+guardar_consumos, procesar_mensajes_telegram, procesar_fijos_mensuales) coinciden con las columnas del UNIQUE INDEX del
 schema (db/schema.sql).
 """
 
@@ -15,7 +14,7 @@ BOT_SCHEMA = os.path.join(REPO_ROOT, "db", "schema.sql")
 # Formas de dedup del código (bot_Saldo.py), extraídas del análisis:
 #   consolidado: lower(remitente)|vto|monto  (es_registro_duplicado)
 #   consumos:    fecha|comprobante|detalle|cuota_total|remitente
-#                (guardar_o_actualizar_consumos_sheet, id_unico)
+#                (guardar_consumos, id_unico)
 #   ingresos:    fecha|Ingreso|categoria|origen
 #                (procesar_mensajes_telegram / procesar_fijos_mensuales)
 

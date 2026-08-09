@@ -14,16 +14,15 @@ import traceback
 from zoneinfo import ZoneInfo
 
 import requests
-import gspread
 import pikepdf
 import pdfplumber
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 # FASE 3: capa de acceso a Supabase (lecturas). Se resuelve el módulo desde el
-# mismo directorio del bot (independiente del cwd de ejecución). NO se eliminan
-# aún GOOGLE_* / SHEET_ID: Sheets queda como respaldo explícito de cada lectura.
+# mismo directorio del bot (independiente del cwd de ejecución). FASE 10C: ya no
+# existe fallback a Google Sheets/Drive; un fallo de lectura lanza
+# SupabaseReadError y Storage es el único destino nuevo de PDFs.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import supabase_client
 
@@ -32,15 +31,11 @@ print("[INICIO] Inicializando bot_Saldo.py de Producción...")
 # ---------- Configuración desde variables de entorno (secrets) ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-SHEET_ID = os.environ["SHEET_ID"]
-SHEET_NAME = "Consolidado"
 LABEL_PROCESADO = "Procesado-Resumen"
 
 # Variables globales para servicios de carga diferida (Lazy Loading)
 _creds = None
-_gc = None
 _gmail_service = None
-_drive_service = None
 
 
 def get_credentials():
@@ -57,14 +52,6 @@ def get_credentials():
     return _creds
 
 
-def get_gc():
-    global _gc
-    if _gc is None:
-        _gc = gspread.authorize(get_credentials())
-        print("[DEBUG] Gspread client inicializado bajo demanda")
-    return _gc
-
-
 def get_gmail_service():
     global _gmail_service
     if _gmail_service is None:
@@ -73,37 +60,28 @@ def get_gmail_service():
     return _gmail_service
 
 
-def get_drive_service():
-    global _drive_service
-    if _drive_service is None:
-        _drive_service = build("drive", "v3", credentials=get_credentials())
-        print("[DEBUG] Drive service inicializado bajo demanda")
-    return _drive_service
-
-
 def _leer_con_supabase(func, nombre):
     """Ejecuta una lectura contra Supabase (FASE 3).
 
-    Devuelve (ok, resultado). Si Supabase no está configurado o la lectura
-    falla, imprime '[SUPABASE READ ERROR]' (error explícito, nunca ocultado) y
-    devuelve (False, None) para que el llamador use Google Sheets como
-    respaldo (fallback documentado).
+    Devuelve el resultado de la lectura. Si Supabase no está configurado o la
+    lectura falla, imprime '[SUPABASE READ ERROR]' (error explícito, nunca
+    ocultado) y lanza SupabaseReadError (FASE 10C: ya NO hay fallback a
+    Google Sheets).
     """
     if not supabase_client.supabase_disponible():
         print(
             "[SUPABASE READ ERROR] Supabase no configurado (faltan "
             "SUPABASE_DB_URL o SUPABASE_DBPW). "
-            f"Usando Google Sheets como respaldo para: {nombre}"
+            f"Lectura bloqueada para: {nombre}"
         )
-        return False, None
+        raise supabase_client.SupabaseReadError(
+            f"Supabase no configurado para: {nombre}"
+        )
     try:
-        return True, func()
+        return func()
     except supabase_client.SupabaseError as exc:
-        print(
-            f"[SUPABASE READ ERROR] {nombre}: {exc}. "
-            "Usando Google Sheets como respaldo."
-        )
-        return False, None
+        print(f"[SUPABASE READ ERROR] {nombre}: {exc}.")
+        raise supabase_client.SupabaseReadError(f"{nombre}: {exc}") from exc
 
 
 def debe_ejecutar_ahora():
@@ -111,21 +89,11 @@ def debe_ejecutar_ahora():
     if forzar == "true":
         return True
 
-    hora_deseada = ""
-    ok, hora_supabase = _leer_con_supabase(
+    # Valor raw preservado (p. ej. '12' sin ':'); NO se corrige en FASE 3.
+    hora_deseada = _leer_con_supabase(
         lambda: supabase_client.obtener_config_valor("Hora_Ejecucion"),
         "config Hora_Ejecucion",
     )
-    if ok:
-        # Valor raw preservado (p. ej. '12' sin ':'); NO se corrige en FASE 3.
-        hora_deseada = hora_supabase
-    else:
-        sh = get_gc().open_by_key(SHEET_ID)
-        ws_config = sh.worksheet("Config")
-        filas = ws_config.get_all_records()
-        if not filas:
-            return True
-        hora_deseada = str(filas[0].get("Hora_Ejecucion", "")).strip()
     if not hora_deseada:
         return True
 
@@ -157,44 +125,11 @@ def obtener_o_crear_label(nombre):
     return nuevo["id"]
 
 
-def obtener_valor_clave_flexible(registro, clave_buscada):
-    for k, v in registro.items():
-        if str(k).strip().lower() == clave_buscada.strip().lower():
-            return str(v).strip()
-    return ""
-
-
 def obtener_reglas():
     print("[DEBUG] Leyendo reglas desde Supabase...")
-    ok, reglas_supabase = _leer_con_supabase(supabase_client.obtener_reglas, "reglas")
-    if ok:
-        # supabase_client.obtener_reglas devuelve SOLO reglas activas
-        # (WHERE activo = TRUE), igual que el filtro del bot (Activo == 'SI').
-        return reglas_supabase
-
-    print("[DEBUG] Fallback: Leyendo reglas de la hoja Datos...")
-    sh = get_gc().open_by_key(SHEET_ID)
-    ws_datos = sh.worksheet("Datos")
-    filas = ws_datos.get_all_records()
-    reglas_activas = []
-
-    for f in filas:
-        activo = obtener_valor_clave_flexible(f, "Activo").upper()
-        if activo == "SI":
-            regla_norm = {
-                "Remitente": obtener_valor_clave_flexible(f, "Remitente"),
-                "Asunto_Contiene": obtener_valor_clave_flexible(f, "Asunto_Contiene"),
-                "Clave": obtener_valor_clave_flexible(f, "Clave"),
-                "Activo": "SI",
-                "Tiene_Adjunto": obtener_valor_clave_flexible(f, "Tiene_Adjunto").upper() or "NO",
-                "Es_Tarjeta_Credito": obtener_valor_clave_flexible(f, "Es_Tarjeta_Credito").upper() or "NO",
-                "Regex_Consumo": obtener_valor_clave_flexible(f, "Regex_Consumo"),
-                "Regex_Cierre": obtener_valor_clave_flexible(f, "Regex_Cierre"),
-                "Regex_Vencimiento": obtener_valor_clave_flexible(f, "Regex_Vencimiento"),
-                "Regex_Monto": obtener_valor_clave_flexible(f, "Regex_Monto"),
-            }
-            reglas_activas.append(regla_norm)
-    return reglas_activas
+    # supabase_client.obtener_reglas devuelve SOLO reglas activas
+    # (WHERE activo = TRUE), igual que el filtro del bot (Activo == 'SI').
+    return _leer_con_supabase(supabase_client.obtener_reglas, "reglas")
 
 
 def buscar_mails_nuevos(remitente, asunto_contiene, excluir_label_procesado=False):
@@ -285,32 +220,16 @@ def quitar_clave_pdf(pdf_bytes, clave):
     return salida.read()
 
 
-def subir_a_drive(nombre_archivo, pdf_bytes):
-    media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype="application/pdf")
-    archivo = get_drive_service().files().create(
-        body={"name": nombre_archivo}, media_body=media, fields="id, webViewLink"
-    ).execute()
-    get_drive_service().permissions().create(
-        fileId=archivo["id"], body={"role": "reader", "type": "anyone"}
-    ).execute()
-    return archivo.get("webViewLink")
-
-
 def subir_pdf(nombre_archivo, pdf_bytes, remitente):
-    """FASE 6: Storage privado como principal, Drive como fallback temporal.
+    """FASE 6/10C: Storage privado como ÚNICO destino de PDFs.
 
-    Devuelve (link_guardado_en_db, link_para_telegram).
-    - Storage: guarda `storage://pdfs/<path>` en DB y signed URL en Telegram.
-    - Drive fallback: usa la misma URL para DB y Telegram.
+    Devuelve (link_guardado_en_db, link_para_telegram): `storage://pdfs/<path>`
+    en DB y signed URL en Telegram. Si el upload a Storage falla, propaga
+    SupabaseStorageError (ya NO hay fallback a Google Drive).
     - EPEC: no debe llamar a esta función (caller deja links vacíos).
     """
-    try:
-        resultado = supabase_client.subir_pdf_storage(nombre_archivo, pdf_bytes, remitente)
-        return resultado["link_ref"], resultado["signed_url"]
-    except supabase_client.SupabaseStorageError as exc:
-        print(f"{exc}. Usando Google Drive como respaldo temporal.")
-        link_drive = subir_a_drive(nombre_archivo, pdf_bytes)
-        return link_drive, link_drive
+    resultado = supabase_client.subir_pdf_storage(nombre_archivo, pdf_bytes, remitente)
+    return resultado["link_ref"], resultado["signed_url"]
 
 
 def formatear_fecha_resumen(fecha_rfc2822):
@@ -321,17 +240,17 @@ def formatear_fecha_resumen(fecha_rfc2822):
         return fecha_rfc2822
 
 
-def guardar_en_sheet(ws, fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_drive=""):
-    """FASE 4: escribe en Supabase (persistencia principal).
+def guardar_consolidado(fecha_rfc, asunto, monto_total, fecha_vencimiento, remitente, link_storage=""):
+    """FASE 4/10C: escribe en Supabase (persistencia principal).
 
     NO escribe en Google Sheets (evita doble escritura / inconsistencia). Si
-    Supabase falla, propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]') y NO
-    inserta en Sheets. Devuelve 'insertado' | 'existente' (el UNIQUE dedup de
-    la DB decide: lower(remitente)|vto|monto, igual que es_registro_duplicado).
+    Supabase falla, propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]').
+    Devuelve 'insertado' | 'existente' (el UNIQUE dedup de la DB decide:
+    lower(remitente)|vto|monto).
     """
     return supabase_client.guardar_consolidado(
         formatear_fecha_resumen(fecha_rfc),
-        remitente, asunto, monto_total, fecha_vencimiento, link_drive,
+        remitente, asunto, monto_total, fecha_vencimiento, link_storage,
     )
 
 
@@ -351,13 +270,15 @@ def mensaje_tiene_label(mensaje_id, label_id):
 
 
 def mensaje_ya_procesado(mensaje_id, label_id):
-    ok, procesado = _leer_con_supabase(
-        lambda: supabase_client.mensaje_ya_procesado(mensaje_id),
-        f"mensaje procesado Gmail {mensaje_id}",
-    )
-    if ok:
-        return procesado
-    return mensaje_tiene_label(mensaje_id, label_id)
+    try:
+        return _leer_con_supabase(
+            lambda: supabase_client.mensaje_ya_procesado(mensaje_id),
+            f"mensaje procesado Gmail {mensaje_id}",
+        )
+    except supabase_client.SupabaseReadError:
+        # FASE 10C: el fallback a Sheets se eliminó; el label de Gmail queda
+        # solo como verificación de dedup auxiliar si Supabase no responde.
+        return mensaje_tiene_label(mensaje_id, label_id)
 
 
 def registrar_y_marcar_mensaje_procesado(mensaje_id, remitente, asunto, label_id):
@@ -449,44 +370,13 @@ def extraer_cuotas(detalle_texto, cuota_texto_detectado=None):
     return detalle_texto.strip(), 1, 1
 
 
-def es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
-    ok, existe = _leer_con_supabase(
+def es_registro_duplicado(remitente, monto_total, fecha_vencimiento):
+    return _leer_con_supabase(
         lambda: supabase_client.existe_consolidado(
             remitente, monto_total, fecha_vencimiento
         ),
         "duplicado de Consolidado",
     )
-    if ok:
-        return existe
-
-    # Fallback de LECTURA a Sheets (las escrituras NO tienen fallback en FASE 4).
-    try:
-        filas = ws_consolidado.get_all_values()
-        if len(filas) <= 1:
-            return False
-            
-        m_cand = normalizar_monto(monto_total)
-        f_vto_cand = str(fecha_vencimiento).strip()
-        r_cand = str(remitente).strip().lower()
-        id_buscado = f"{r_cand}|{f_vto_cand}|{m_cand}"
-        
-        for f in filas[1:]:
-            if len(f) >= 7 and f[6].strip():
-                if f[6].strip().lower() == id_buscado:
-                    return True
-            elif len(f) >= 5:
-                try:
-                    m_sheet = normalizar_monto(f[3]) if f[3] else 0.0
-                    f_vto_sheet = str(f[4]).strip()
-                    r_sheet = str(f[1]).strip().lower()
-                    
-                    if r_sheet == r_cand and m_sheet == m_cand and f_vto_sheet == f_vto_cand:
-                        return True
-                except Exception:
-                    continue
-    except Exception as e:
-        print(f"[DEBUG] Error al verificar duplicados en Consolidado: {str(e)}")
-    return False
 
 
 def buscar_por_tokens(texto_unido, kw_target, es_fecha=False, tomar_segundo=False):
@@ -676,61 +566,26 @@ def extraer_consumos_pdf(pdf_bytes, texto_mail, fecha_mail_fmt, regla):
 
 # ---------- Guardado y Actualización de Consumos ----------
 
-def guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente):
-    """FASE 4: escribe en Supabase (persistencia principal).
+def guardar_consumos(consumos, remitente):
+    """FASE 4/10C: escribe en Supabase (persistencia principal).
 
     NO escribe en Google Sheets (evita doble escritura). Si Supabase falla,
-    propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]') y NO inserta en
-    Sheets. Devuelve la lista de estados (mismo orden que la entrada):
-    'insertado' | 'actualizado' | 'sin_cambios' (cuota nunca retrocede).
+    propaga SupabaseWriteError ('[SUPABASE WRITE ERROR]'). Devuelve la lista
+    de estados (mismo orden que la entrada): 'insertado' | 'actualizado' |
+    'sin_cambios' (cuota nunca retrocede).
     """
     return supabase_client.guardar_o_actualizar_consumos(consumos, remitente)
 
 
 # ---------- Sincronización Automática de Fijos ----------
 
-def procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos):
-    if ws_consumos is None:
-        return
-
+def procesar_fijos_mensuales():
     ahora = datetime.now(ZoneInfo("America/Argentina/Cordoba"))
     fecha_fijo = f"01/{ahora.strftime('%m/%Y')}"
 
-    gastos_fijos = []
-    ingresos_fijos = []
-
-    ok, fijos_supabase = _leer_con_supabase(
+    gastos_fijos, ingresos_fijos = _leer_con_supabase(
         supabase_client.obtener_fijos, "fijos mensuales"
     )
-    if ok:
-        gastos_fijos, ingresos_fijos = fijos_supabase
-    else:
-        valores_config = ws_config.get_all_values()
-        if len(valores_config) <= 1:
-            return
-
-        for fila in valores_config[1:]:
-            if len(fila) >= 6:
-                tipo_g = str(fila[4]).strip()
-                monto_g_raw = str(fila[5]).strip()
-                if tipo_g and monto_g_raw:
-                    try:
-                        val_g = normalizar_monto(monto_g_raw)
-                        if val_g > 0:
-                            gastos_fijos.append({"tipo": tipo_g, "monto": val_g})
-                    except Exception:
-                        pass
-
-            if len(fila) >= 10:
-                tipo_i = str(fila[8]).strip()
-                monto_i_raw = str(fila[9]).strip()
-                if tipo_i and monto_i_raw:
-                    try:
-                        val_i = normalizar_monto(monto_i_raw)
-                        if val_i > 0:
-                            ingresos_fijos.append({"tipo": tipo_i, "monto": val_i})
-                    except Exception:
-                        pass
 
     if gastos_fijos:
         consumos_fijos = [
@@ -754,7 +609,7 @@ def procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos):
             ]
             enviar_telegram(f"🗓️ Gastos Fijos del Mes ({fecha_fijo}):\n" + "\n".join(msgs))
 
-    if ingresos_fijos and ws_ingresos is not None:
+    if ingresos_fijos:
         nuevos_ingresos = []
         for ing in ingresos_fijos:
             estado = supabase_client.guardar_ingreso(
@@ -773,36 +628,11 @@ def procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos):
 
 # ---------- Procesamiento de Telegram ----------
 
-def leer_config_completo(ws_config):
-    ok, config_supabase = _leer_con_supabase(
+def leer_config_completo():
+    # (last_update_id, state, tipos_gastos, tipos_ingresos) 1:1 con la hoja.
+    return _leer_con_supabase(
         supabase_client.obtener_config_completo, "config completa"
     )
-    if ok:
-        # (last_update_id, state, tipos_gastos, tipos_ingresos) 1:1 con la hoja.
-        return config_supabase
-
-    valores = ws_config.get_all_values()
-    last_update_id = 0
-    state = ""
-    tipos_gastos = []
-    tipos_ingresos = []
-    
-    if len(valores) > 1:
-        if len(valores[1]) > 1 and valores[1][1]:
-            try:
-                last_update_id = int(valores[1][1])
-            except Exception:
-                pass
-        if len(valores[1]) > 2:
-            state = str(valores[1][2]).strip()
-            
-    for fila in valores[1:]:
-        if len(fila) > 4 and fila[4].strip():
-            tipos_gastos.append(fila[4].strip())
-        if len(fila) > 8 and fila[8].strip():
-            tipos_ingresos.append(fila[8].strip())
-            
-    return last_update_id, state, tipos_gastos, tipos_ingresos
 
 
 def parsear_monto_manual(texto):
@@ -871,9 +701,7 @@ def procesar_mensajes_telegram():
         print(f"[ERROR] No se pudo decodificar el payload de Telegram: {str(e)}")
         return
 
-    sh = get_gc().open_by_key(SHEET_ID)
-    ws_config = sh.worksheet("Config")
-    _, _, tipos_gastos, tipos_ingresos = leer_config_completo(ws_config)
+    _, _, tipos_gastos, tipos_ingresos = leer_config_completo()
 
     for update in updates:
         callback_query = update.get("callback_query")
@@ -971,8 +799,7 @@ def procesar_mensajes_telegram():
                     pdf_sin_clave, "", fecha_mail_fmt, regla
                 )
                 
-                ws_consolidado = sh.worksheet(SHEET_NAME)
-                if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+                if es_registro_duplicado(remitente, monto_total, fecha_vencimiento):
                     enviar_telegram(f"⚠️ El archivo enviado de {remitente} ya fue procesado anteriormente (Monto: ${monto_total:,.2f}, Vto: {fecha_vencimiento}).")
                     continue
 
@@ -984,10 +811,9 @@ def procesar_mensajes_telegram():
                     )
 
                 if es_tarjeta and consumos:
-                    ws_consumos = sh.worksheet("Consumos")
-                    guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente)
-                    
-                guardar_en_sheet(ws_consolidado, datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_guardado)
+                    guardar_consumos(consumos, remitente)
+
+                guardar_consolidado(datetime.now().strftime("%a, %d %b %Y %H:%M:%S -0000"), f"Resumen recibido por Telegram ({file_name})", monto_total, fecha_vencimiento, remitente, link_guardado)
                 
                 confirmacion = f"✅ ¡Factura procesada con éxito desde Telegram!\n🏢 Empresa: {remitente}\n💵 Monto: ${monto_total:,.2f}\n📅 Vencimiento: {fecha_vencimiento}"
                 if link_telegram:
@@ -1009,23 +835,10 @@ def revisar_mails():
     total_procesados = 0
     excluir_label_en_busqueda = not supabase_client.supabase_disponible()
 
-    sh = get_gc().open_by_key(SHEET_ID)
-    ws_consolidado = sh.worksheet(SHEET_NAME)
-    ws_config = sh.worksheet("Config")
-    
-    try:
-        ws_consumos = sh.worksheet("Consumos")
-    except gspread.WorksheetNotFound:
-        ws_consumos = None
-
-    try:
-        ws_ingresos = sh.worksheet("Ingresos")
-    except gspread.WorksheetNotFound:
-        ws_ingresos = None
-
+    # FASE 10C: sin hojas de cálculo; Supabase es la única fuente de lecturas.
     # Sincronización automática de gastos e ingresos fijos del mes
     try:
-        procesar_fijos_mensuales(ws_config, ws_consumos, ws_ingresos)
+        procesar_fijos_mensuales()
     except Exception as e_fijos:
         print(f"[ERROR] Error al procesar fijos mensuales: {str(e_fijos)}")
 
@@ -1072,8 +885,8 @@ def revisar_mails():
                                     pdf_sin_clave, cuerpo_texto, fecha_mail_fmt, regla
                                 )
                                 
-                                if ws_consumos is not None and es_tarjeta and consumos:
-                                    guardar_o_actualizar_consumos_sheet(ws_consumos, consumos, remitente)
+                                if es_tarjeta and consumos:
+                                    guardar_consumos(consumos, remitente)
                             except pikepdf.PasswordError:
                                 print("[ERROR] Clave de PDF incorrecta")
 
@@ -1084,7 +897,7 @@ def revisar_mails():
                             kw_monto = str(regla.get("Regex_Monto", "")).strip()
                             _, fecha_vencimiento, monto_total = extraer_fechas_y_monto_global("", cuerpo_texto, fecha_mail_fmt, kw_cierre, kw_vto, kw_monto, remitente)
 
-                    if es_registro_duplicado(ws_consolidado, remitente, monto_total, fecha_vencimiento):
+                    if es_registro_duplicado(remitente, monto_total, fecha_vencimiento):
                         registrar_y_marcar_mensaje_procesado(
                             m["id"], remitente, asunto, label_id
                         )
@@ -1095,7 +908,7 @@ def revisar_mails():
                             pdf_filename or "Factura.pdf", pdf_sin_clave, remitente
                         )
 
-                    guardar_en_sheet(ws_consolidado, fecha, asunto, monto_total, fecha_vencimiento, remitente, link_guardado)
+                    guardar_consolidado(fecha, asunto, monto_total, fecha_vencimiento, remitente, link_guardado)
                     
                     texto_telegram = f"📩 Resumen Procesado\nDe: {remitente}\nAsunto: {asunto}\nMonto: ${monto_total:,.2f}\nVencimiento: {fecha_vencimiento}"
                     if link_telegram:
@@ -1136,7 +949,7 @@ if __name__ == "__main__":
             print("[MAIN] Ejecutando revisión completa de mails...")
             revisar_mails()
         else:
-            print("[MAIN] Todavía no es la hora configurada en el Sheet y no hay payload de Telegram.")
+            print("[MAIN] Todavía no es la hora configurada en Supabase y no hay payload de Telegram.")
             
     except Exception as e:
         print(f"[MAIN] ERROR durante la ejecución: {str(e)}")

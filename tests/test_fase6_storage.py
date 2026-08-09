@@ -68,18 +68,13 @@ def test_subir_pdf_usa_storage(bot_module, monkeypatch):
             "signed_url": "https://signed",
         },
     )
-    monkeypatch.setattr(
-        bot_module,
-        "subir_a_drive",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("No debe usar Drive")),
-    )
     assert bot_module.subir_pdf("Factura.pdf", b"%PDF-1.4", "BNA") == (
         "storage://pdfs/resumenes/bna/abc.pdf",
         "https://signed",
     )
 
 
-def test_subir_pdf_fallback_drive(bot_module, monkeypatch, capsys):
+def test_subir_pdf_error_storage_propaga(bot_module, monkeypatch, capsys):
     monkeypatch.setattr(
         supabase_client,
         "subir_pdf_storage",
@@ -87,30 +82,8 @@ def test_subir_pdf_fallback_drive(bot_module, monkeypatch, capsys):
             supabase_client.SupabaseStorageError("[SUPABASE STORAGE ERROR] boom")
         ),
     )
-    monkeypatch.setattr(bot_module, "subir_a_drive", lambda *a, **k: "https://drive")
-    assert bot_module.subir_pdf("Factura.pdf", b"%PDF-1.4", "BNA") == (
-        "https://drive",
-        "https://drive",
-    )
-    assert "Usando Google Drive como respaldo temporal" in capsys.readouterr().out
-
-
-class _WS:
-    def get_all_values(self):
-        return [["h"]]
-
-    def get_all_records(self):
-        return [{"Hora_Ejecucion": "12"}]
-
-
-class _Sheet:
-    def worksheet(self, name):
-        return _WS()
-
-
-class _GC:
-    def open_by_key(self, key):
-        return _Sheet()
+    with pytest.raises(supabase_client.SupabaseStorageError):
+        bot_module.subir_pdf("Factura.pdf", b"%PDF-1.4", "BNA")
 
 
 def test_revisar_mails_storage_ref_en_db_y_signed_url_en_telegram(bot_module, monkeypatch):
@@ -118,7 +91,6 @@ def test_revisar_mails_storage_ref_en_db_y_signed_url_en_telegram(bot_module, mo
     enviados = []
     registrados = []
 
-    monkeypatch.setattr(bot_module, "get_gc", lambda: _GC())
     monkeypatch.setattr(bot_module, "obtener_o_crear_label", lambda nombre: "LBL")
     monkeypatch.setattr(bot_module, "obtener_reglas", lambda: [{
         "Remitente": "bna",
@@ -149,7 +121,7 @@ def test_revisar_mails_storage_ref_en_db_y_signed_url_en_telegram(bot_module, mo
     )
     monkeypatch.setattr(
         bot_module,
-        "guardar_en_sheet",
+        "guardar_consolidado",
         lambda *a: guardados.append(a) or "insertado",
     )
     monkeypatch.setattr(bot_module, "enviar_telegram", lambda msg: enviados.append(msg))
@@ -161,7 +133,7 @@ def test_revisar_mails_storage_ref_en_db_y_signed_url_en_telegram(bot_module, mo
 
     bot_module.revisar_mails()
 
-    assert guardados[0][6] == "storage://pdfs/resumenes/bna/abc.pdf"
+    assert guardados[0][5] == "storage://pdfs/resumenes/bna/abc.pdf"
     assert "PDF: https://signed" in enviados[0]
     assert registrados == [("m1", "bna", "Resumen", "LBL")]
 
@@ -170,7 +142,6 @@ def test_revisar_mails_epec_sin_storage(bot_module, monkeypatch):
     guardados = []
     enviados = []
 
-    monkeypatch.setattr(bot_module, "get_gc", lambda: _GC())
     monkeypatch.setattr(bot_module, "obtener_o_crear_label", lambda nombre: "LBL")
     monkeypatch.setattr(bot_module, "obtener_reglas", lambda: [{
         "Remitente": "avisos@oficinaepec.com.ar",
@@ -201,7 +172,7 @@ def test_revisar_mails_epec_sin_storage(bot_module, monkeypatch):
     )
     monkeypatch.setattr(
         bot_module,
-        "guardar_en_sheet",
+        "guardar_consolidado",
         lambda *a: guardados.append(a) or "insertado",
     )
     monkeypatch.setattr(bot_module, "enviar_telegram", lambda msg: enviados.append(msg))
@@ -209,7 +180,7 @@ def test_revisar_mails_epec_sin_storage(bot_module, monkeypatch):
 
     bot_module.revisar_mails()
 
-    assert guardados[0][6] == ""
+    assert guardados[0][5] == ""
     assert "PDF:" not in enviados[0]
 
 
@@ -234,19 +205,7 @@ def test_telegram_pdf_manual_guarda_storage_ref_y_envia_signed_url(bot_module, m
     class RespDownload:
         content = pdf_bytes
 
-    class WSConfig:
-        def get_all_values(self):
-            return [["h"]]
-
-    class Sheet:
-        def worksheet(self, name):
-            return WSConfig()
-
-    class GC:
-        def open_by_key(self, key):
-            return Sheet()
-
-    monkeypatch.setattr(bot_module, "get_gc", lambda: GC())
+    monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
     monkeypatch.setattr(
         supabase_client, "obtener_config_completo", lambda: (0, "", ["ALQ"], ["SUELDO"])
     )
@@ -279,7 +238,7 @@ def test_telegram_pdf_manual_guarda_storage_ref_y_envia_signed_url(bot_module, m
     )
     monkeypatch.setattr(
         bot_module,
-        "guardar_en_sheet",
+        "guardar_consolidado",
         lambda *a: guardados.append(a) or "insertado",
     )
     monkeypatch.setattr(bot_module, "enviar_telegram", lambda msg: enviados.append(msg))
@@ -288,5 +247,5 @@ def test_telegram_pdf_manual_guarda_storage_ref_y_envia_signed_url(bot_module, m
     monkeypatch.setenv("TELEGRAM_UPDATE_PAYLOAD", payload)
     bot_module.procesar_mensajes_telegram()
 
-    assert guardados[0][6] == "storage://pdfs/resumenes/bna/abc.pdf"
+    assert guardados[0][5] == "storage://pdfs/resumenes/bna/abc.pdf"
     assert "📂 Archivo: https://signed" in enviados[0]

@@ -278,7 +278,7 @@ def _normalizar_monto(v):
 
 
 def _referencia_consumos(consumos, remitente):
-    """Referencia 1:1 de la lógica ANTERIOR (guardar_o_actualizar_consumos_sheet
+    """Referencia 1:1 de la lógica ANTERIOR (guardar_consumos
     original): devuelve la lista de filas final (id | cuota | pesos | dolar)."""
     filas = []
     for c in consumos:
@@ -338,7 +338,7 @@ def test_equivalencia_consumos_con_logica_anterior(tag):
 
 def test_equivalencia_consolidado_con_logica_anterior(tag):
     """La dedup de la DB produce el mismo conjunto de IDs que la lógica anterior
-    (es_registro_duplicado + guardar_en_sheet)."""
+    (es_registro_duplicado + guardar_consolidado)."""
     vto = "21/08/2026"
     casos = [
         ("05/08/2026", tag, "R1", 100.0, vto),

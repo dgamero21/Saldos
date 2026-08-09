@@ -8,8 +8,8 @@ Arquitectura:
     Supabase (PostgreSQL)
 
 Esta capa NO mezcla SQL con lógica de negocio: expone funciones que devuelven
-los mismos dicts que bot_Saldo.py obtiene hoy de Google Sheets, para que la
-equivalencia Sheets <-> Supabase sea 1:1.
+los mismos dicts que bot_Saldo.py usa, para que la equivalencia con la lógica
+original (Google Sheets) sea 1:1.
 
 FASE 3 (lectura): las consultas pasan por _read_only(); cualquier intento de
 INSERT/UPDATE/DELETE/DDL se detecta y lanza excepción.
@@ -21,12 +21,10 @@ con dos ejecuciones simultáneas: ON CONFLICT + transacción + catch de
 UniqueViolation). NO normalizan comprobantes (raw) ni cambian la lógica de
 negocio del bot. NO escriben en Sheets (la capa no conoce Sheets).
 
-Estrategia de fallback (documentada en FASE 4):
-    * Lecturas: bot_Saldo.py usa Sheets como respaldo explícito.
-    * Escrituras: NO hay fallback silencioso a Sheets (evita doble escritura /
-      inconsistencia). Si Supabase falla, se lanza SupabaseWriteError con el
-      mensaje '[SUPABASE WRITE ERROR]' visible; el bot lo propaga al error
-      handler (Telegram) y NO inserta en Sheets.
+FASE 10C (sin fallback): bot_Saldo.py ya NO usa Google Sheets como respaldo.
+Un fallo de lectura lanza SupabaseReadError ('[SUPABASE READ ERROR]') y un
+fallo de escritura lanza SupabaseWriteError ('[SUPABASE WRITE ERROR]'); el bot
+lo propaga al error handler (Telegram).
 
 Configuración (nunca hardcodeada):
     SUPABASE_DB_URL   - connection string completa (postgresql://...). Preferida.
@@ -36,7 +34,8 @@ Errores (explícitos, no se ocultan):
     SupabaseNotConfiguredError - faltan SUPABASE_DB_URL / SUPABASE_DBPW
     SupabaseReadError          - fallo de conexión / consulta / datos inválidos
     SupabaseWriteError         - fallo de escritura / datos inválidos al escribir
-bot_Saldo.py decide el fallback a Sheets y avisa "[SUPABASE READ ERROR]".
+bot_Saldo.py propaga los errores Supabase al error handler y NO lee ni escribe
+en Sheets.
 """
 from __future__ import annotations
 
@@ -487,10 +486,9 @@ def guardar_consolidado(
     fecha_mail, remitente, asunto, monto_total,
     fecha_vencimiento, link_drive="", pertenece="David",
 ) -> str:
-    """Equivalente 1:1 a guardar_en_sheet() + es_registro_duplicado():
-    inserta el resumen en 'consolidado' con UPSERT idempotente. Si ya existe
-    (mismo lower(remitente)|vto|monto) devuelve 'existente' sin duplicar.
-    Devuelve 'insertado' | 'existente'."""
+    """Inserta el resumen en 'consolidado' con UPSERT idempotente. Si ya
+    existe (mismo lower(remitente)|vto|monto) devuelve 'existente' sin
+    duplicar. Devuelve 'insertado' | 'existente'."""
     f_mail = _a_fecha(fecha_mail)
     f_vto = _a_fecha(fecha_vencimiento)
     if f_mail is None or f_vto is None:
@@ -527,7 +525,7 @@ def guardar_consolidado(
 
 
 def guardar_o_actualizar_consumos(consumos, remitente) -> list[dict]:
-    """Equivalente 1:1 a guardar_o_actualizar_consumos_sheet():
+    """Persiste consumos con la misma lógica de dedup/cuotas que el bot:
       - si el consumo no existe -> lo inserta;
       - si existe y cuota_actual nueva >= existente -> actualiza
         cuota_actual, pesos, dolar, fecha_cierre, fecha_vencimiento;
@@ -713,8 +711,7 @@ def registrar_mensaje_procesado(mensaje_id, remitente="", asunto="") -> str:
 # Persistencia estable: consolidado.link_drive guarda una referencia interna
 # 'storage://pdfs/<path>' para poder re-firmar el objeto a futuro.
 # Entrega inmediata: Telegram recibe una signed URL temporal.
-# Mientras FASE 6/8 no retire Google Drive del todo, el bot puede usar Drive
-# como fallback explícito si faltan credenciales de Storage o el upload falla.
+# FASE 10C: Storage es el único destino de PDFs; ya NO hay fallback a Drive.
 # ---------------------------------------------------------------------------
 
 def crear_signed_url_pdf(link_o_path: str, expires_in: int = _SIGNED_URL_TTL_SECONDS) -> str:

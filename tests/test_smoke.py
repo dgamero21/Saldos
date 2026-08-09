@@ -48,8 +48,8 @@ def test_bot_y_webhook_presentes():
 
 def test_blobs_de_git_coinciden_con_working_tree(repo_root):
     expected = {
-        # FASE 7 baseline en desarrollo (Webhook -> Supabase).
-        "bot_Saldo.py": "e2d820c7adb9669a66f0231a6a74d454344f6518",
+        # FASE 10C: bot sin fallback Sheets/Drive (firmas sin ws).
+        "bot_Saldo.py": "82b074076ac786770dda8bc616bcfc2d658f8e9b",
         # FASE 10A: obtenerCategorias filtra activo=eq.true.
         "api/webhook.js": "fe7139e23100f0d4837debd8b5f068293b257813",
     }
@@ -87,5 +87,5 @@ def test_import_bot_con_env_dummies(bot_module):
     assert bot_module.TELEGRAM_TOKEN == "test-token"
     assert callable(bot_module.revisar_mails)
     assert callable(bot_module.procesar_mensajes_telegram)
-    assert callable(bot_module.guardar_en_sheet)
-    assert callable(bot_module.guardar_o_actualizar_consumos_sheet)
+    assert callable(bot_module.guardar_consolidado)
+    assert callable(bot_module.guardar_consumos)

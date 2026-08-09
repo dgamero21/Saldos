@@ -91,27 +91,8 @@ def test_registrar_y_marcar_mensaje_procesado_tolera_error_de_label(
     assert "[GMAIL LABEL ERROR]" in capsys.readouterr().out
 
 
-class _WS:
-    def get_all_values(self):
-        return [["h"]]
-
-    def get_all_records(self):
-        return [{"Hora_Ejecucion": "12"}]
-
-
-class _Sheet:
-    def worksheet(self, name):
-        return _WS()
-
-
-class _GC:
-    def open_by_key(self, key):
-        return _Sheet()
-
-
 def test_revisar_mails_no_reprocesa_mensaje_ya_en_db(bot_module, monkeypatch):
     flags = []
-    monkeypatch.setattr(bot_module, "get_gc", lambda: _GC())
     monkeypatch.setattr(bot_module, "obtener_o_crear_label", lambda nombre: "LBL")
     monkeypatch.setattr(bot_module, "obtener_reglas", lambda: [{
         "Remitente": "bna",
@@ -140,7 +121,6 @@ def test_revisar_mails_no_reprocesa_mensaje_ya_en_db(bot_module, monkeypatch):
 
 def test_revisar_mails_dup_registra_mensaje_procesado(bot_module, monkeypatch):
     registrados = []
-    monkeypatch.setattr(bot_module, "get_gc", lambda: _GC())
     monkeypatch.setattr(bot_module, "obtener_o_crear_label", lambda nombre: "LBL")
     monkeypatch.setattr(bot_module, "obtener_reglas", lambda: [{
         "Remitente": "bna",
@@ -180,7 +160,7 @@ def test_revisar_mails_dup_registra_mensaje_procesado(bot_module, monkeypatch):
     )
     monkeypatch.setattr(
         bot_module,
-        "guardar_en_sheet",
+        "guardar_consolidado",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("No debe escribir")),
     )
 

@@ -5,8 +5,10 @@ Verifica con mocks:
   - Cuota que nunca retrocede en consumos.
   - ID legacy reproducible (mismo formato que el bot).
   - Errores explícitos '[SUPABASE WRITE ERROR]' / SupabaseNotConfiguredError.
-  - Sheets NO recibe escrituras accidentales (ws se ignora).
-  - es_registro_duplicado usa Supabase (lectura) con fallback a la hoja.
+  - Sheets NO recibe escrituras accidentales (FASE 10C: las firmas ya no
+    reciben ws y el bot no importa gspread).
+  - es_registro_duplicado usa Supabase (lectura) y lanza SupabaseReadError
+    si Supabase no está disponible o falla (sin fallback a la hoja).
 """
 import sys
 
@@ -62,30 +64,6 @@ class FakeConn:
 
     def close(self):
         self.closed = True
-
-
-class SpyWorksheet:
-    """Registra cualquier escritura que le llegara (no debería ocurrir)."""
-
-    def __init__(self):
-        self.append_calls = []
-        self.append_rows_calls = []
-        self.update_calls = []
-
-    def append_row(self, *args, **kwargs):
-        self.append_calls.append((args, kwargs))
-
-    def append_rows(self, *args, **kwargs):
-        self.append_rows_calls.append((args, kwargs))
-
-    def update(self, *args, **kwargs):
-        self.update_calls.append((args, kwargs))
-
-    def get_all_values(self):
-        return []
-
-    def get_all_records(self):
-        return []
 
 
 @pytest.fixture
@@ -299,26 +277,21 @@ def test_ingreso_monto_invalido_lanza_write_error():
 
 
 # ---------------------------------------------------------------------------
-# bot_Saldo: las escrituras NO tocan Sheets (FASE 4)
+# bot_Saldo: las escrituras NO tocan Sheets (FASE 4 / FASE 10C)
 # ---------------------------------------------------------------------------
 
-def test_guardar_en_sheet_escribe_solo_supabase(bot_module, monkeypatch):
-    ws = SpyWorksheet()
+def test_guardar_consolidado_escribe_solo_supabase(bot_module, monkeypatch):
     monkeypatch.setattr(
         supabase_client, "guardar_consolidado",
         lambda *a, **k: "insertado",
     )
-    assert bot_module.guardar_en_sheet(
-        ws, "Wed, 05 Aug 2026 10:00:00 -0000", "Resumen", 100, "21/08/2026",
+    assert bot_module.guardar_consolidado(
+        "Wed, 05 Aug 2026 10:00:00 -0000", "Resumen", 100, "21/08/2026",
         "BNA", "http://link",
     ) == "insertado"
-    assert ws.append_calls == []
-    assert ws.update_calls == []
 
 
-def test_guardar_en_sheet_error_no_toca_sheets(bot_module, monkeypatch):
-    ws = SpyWorksheet()
-
+def test_guardar_consolidado_error_propaga(bot_module, monkeypatch):
     def boom(*a, **k):
         raise supabase_client.SupabaseWriteError(
             "[SUPABASE WRITE ERROR] connection timeout"
@@ -326,53 +299,28 @@ def test_guardar_en_sheet_error_no_toca_sheets(bot_module, monkeypatch):
 
     monkeypatch.setattr(supabase_client, "guardar_consolidado", boom)
     with pytest.raises(supabase_client.SupabaseWriteError):
-        bot_module.guardar_en_sheet(
-            ws, "05/08/2026", "Resumen", 100, "21/08/2026", "BNA"
+        bot_module.guardar_consolidado(
+            "05/08/2026", "Resumen", 100, "21/08/2026", "BNA"
         )
-    assert ws.append_calls == []
-    assert ws.update_calls == []
 
 
-def test_guardar_o_actualizar_consumos_sheet_escribe_solo_supabase(
-    bot_module, monkeypatch
-):
-    ws = SpyWorksheet()
+def test_guardar_consumos_escribe_solo_supabase(bot_module, monkeypatch):
     consumos = [_consumo()]
     monkeypatch.setattr(
         supabase_client, "guardar_o_actualizar_consumos",
         lambda c, r: [{"estado": "insertado"}],
     )
-    resultado = bot_module.guardar_o_actualizar_consumos_sheet(
-        ws, consumos, "NAVI"
-    )
+    resultado = bot_module.guardar_consumos(consumos, "NAVI")
     assert resultado == [{"estado": "insertado"}]
-    assert ws.append_calls == []
-    assert ws.append_rows_calls == []
-    assert ws.update_calls == []
 
 
 def test_telegram_gasto_manual_no_escribe_en_sheets(bot_module, monkeypatch):
-    """MANUAL|... registra el gasto en Supabase y NUNCA pide la hoja Consumos."""
+    """MANUAL|... registra el gasto en Supabase y NO accede a ninguna hoja."""
     llamado = []
 
-    class WS:
-        def get_all_values(self):
-            return [["Hora_Ejecucion", "12"]]
-
-    class Sheet:
-        def worksheet(self, name):
-            if name == "Consumos":  # FASE 4: no debe pedirse para escribir
-                raise AssertionError("No debe acceder a la hoja Consumos")
-            return WS()
-
-    class GC:
-        def open_by_key(self, key):
-            return Sheet()
-
-    monkeypatch.setattr(bot_module, "get_gc", lambda: GC())
     monkeypatch.setattr(
         bot_module, "leer_config_completo",
-        lambda ws: (0, "", ["ALQUILER"], ["SUELDO"]),
+        lambda: (0, "", ["ALQUILER"], ["SUELDO"]),
     )
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
 
@@ -405,24 +353,9 @@ def test_telegram_gasto_manual_no_escribe_en_sheets(bot_module, monkeypatch):
 def test_telegram_ingreso_manual_usa_supabase(bot_module, monkeypatch):
     llamado = []
 
-    class WS:
-        def get_all_values(self):
-            return [["Hora_Ejecucion", "12"]]
-
-    class Sheet:
-        def worksheet(self, name):
-            if name == "Ingresos":  # FASE 4: no debe pedirse para escribir
-                raise AssertionError("No debe acceder a la hoja Ingresos")
-            return WS()
-
-    class GC:
-        def open_by_key(self, key):
-            return Sheet()
-
-    monkeypatch.setattr(bot_module, "get_gc", lambda: GC())
     monkeypatch.setattr(
         bot_module, "leer_config_completo",
-        lambda ws: (0, "", ["ALQUILER"], ["SUELDO"]),
+        lambda: (0, "", ["ALQUILER"], ["SUELDO"]),
     )
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
     monkeypatch.setattr(
@@ -448,48 +381,35 @@ def test_telegram_ingreso_manual_usa_supabase(bot_module, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# es_registro_duplicado (lectura): Supabase primero, hoja como fallback
+# es_registro_duplicado (lectura): Supabase; fallo -> SupabaseReadError
 # ---------------------------------------------------------------------------
 
 def test_es_registro_duplicado_usa_supabase(bot_module, monkeypatch):
-    ws = SpyWorksheet()
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
     monkeypatch.setattr(supabase_client, "existe_consolidado", lambda *a: True)
-    assert bot_module.es_registro_duplicado(ws, "BNA", 100, "21/08/2026") is True
+    assert bot_module.es_registro_duplicado("BNA", 100, "21/08/2026") is True
     monkeypatch.setattr(supabase_client, "existe_consolidado", lambda *a: False)
-    assert bot_module.es_registro_duplicado(ws, "BNA", 100, "21/08/2026") is False
+    assert bot_module.es_registro_duplicado("BNA", 100, "21/08/2026") is False
 
 
-def test_es_registro_duplicado_fallback_hoja(bot_module, monkeypatch):
-    class WS:
-        def get_all_values(self):
-            return [
-                ["Fecha Mail", "Remitente", "Asunto", "Monto Total",
-                 "Fecha Vencimiento", "Link", "ID_Consolidado"],
-                ["", "BNA", "", 100, "21/08/2026", "", "bna|21/08/2026|100.0"],
-            ]
-
-    monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: False)
-    assert bot_module.es_registro_duplicado(WS(), "BNA", 100, "21/08/2026") is True
-    assert bot_module.es_registro_duplicado(WS(), "BNA", 200, "21/08/2026") is False
-
-
-def test_es_registro_duplicado_error_supabase_fallback_hoja(
+def test_es_registro_duplicado_supabase_no_disponible_raise(
     bot_module, monkeypatch, capsys
 ):
-    class WS:
-        def get_all_values(self):
-            return [
-                ["Fecha Mail", "Remitente", "Asunto", "Monto Total",
-                 "Fecha Vencimiento", "Link", "ID_Consolidado"],
-                ["", "BNA", "", 100, "21/08/2026", "", "bna|21/08/2026|100.0"],
-            ]
+    monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: False)
+    with pytest.raises(supabase_client.SupabaseReadError):
+        bot_module.es_registro_duplicado("BNA", 100, "21/08/2026")
+    assert "[SUPABASE READ ERROR]" in capsys.readouterr().out
 
+
+def test_es_registro_duplicado_error_supabase_propaga(
+    bot_module, monkeypatch, capsys
+):
     monkeypatch.setattr(supabase_client, "supabase_disponible", lambda: True)
 
     def boom(*a, **k):
         raise supabase_client.SupabaseReadError("timeout")
 
     monkeypatch.setattr(supabase_client, "existe_consolidado", boom)
-    assert bot_module.es_registro_duplicado(WS(), "BNA", 100, "21/08/2026") is True
+    with pytest.raises(supabase_client.SupabaseReadError):
+        bot_module.es_registro_duplicado("BNA", 100, "21/08/2026")
     assert "[SUPABASE READ ERROR]" in capsys.readouterr().out
