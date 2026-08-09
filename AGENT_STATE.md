@@ -9,15 +9,18 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 11A — Scaffold Web App (solo lectura) — **PASS 2026-08-09**
+FASE ACTUAL:        FASE 11B — Web App con escrituras (carga/ABM) — **PASS 2026-08-09**
 ESTADO:             Suite local 144 passed / 7 skipped; smoke 7/7 PASS; tests
-                    Node dashboard 4/4 PASS. Working tree limpio tras commit.
-AGENTE ACTUAL:      FASE 11A = PASS. Web App (UI original Index.html + ECharts
-                    + Tailwind) servida desde Vercel en `/`; endpoint
-                    `GET /api/dashboard` reproduce `getDashboardRawData`
-                    sobre PostgREST con auth bearer `API_APP_TOKEN`. UI
-                    congelada (sin rediseño); `toggleEstadoPago` no-op.
-                    No escritura, no producción, no secrets nuevos.
+                    Node: dashboard 4/4, pago/fijos/ingreso 19/19 PASS.
+AGENTE ACTUAL:      FASE 11B = PASS. Web App (UI original Index.html + ECharts
+                    + Tailwind) con escrituras habilitadas:
+                    - POST /api/pago → marca PAGADO/PENDIENTE en consolidado/consumos
+                    - POST /api/fijos  → ABM categorias_fijas (gasto/ingreso fijo)
+                    - POST /api/ingreso → registra ingreso manual (valida categoria)
+                    Auth bearer API_APP_TOKEN inyectado en Index.html.
+                    UI: toggleEstadoPago persiste; sección Gestión con ingreso
+                    manual + ABM fijos (crear/editar/eliminar/soft delete).
+                    No producción, no secrets nuevos, webhook.js intacto.
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -558,8 +561,36 @@ AGENTE ACTUAL:      FASE 11A = PASS. Web App (UI original Index.html + ECharts
   producción, no secrets nuevos. `toggleEstadoPago` no-op loguea info.
   Reversible (borrar `web/`, `api/dashboard.js`, `api/_supabase.js`,
   revertir `vercel.json`).
-- **GATE**: no requerido (no afecta producción). FASE 11B pendiente
-  (escritura: `POST /api/pago`, `POST /api/fijos`, auth UI).
+- **GATE**: no requerido (no afecta producción).
+
+### FASE 11B — Web App con escrituras (carga/ABM) — **PASS 2026-08-09**
+- **ANALISTA**: UI original (Index.html + ECharts + Tailwind) ya servida en
+  11A (solo lectura). Objetivo: habilitar escrituras sin rediseñar la UI.
+  Endpoints requeridos: `POST /api/pago` (toggle PAGADO/PENDIENTE),
+  `POST /api/fijos` (ABM categorias_fijas), `POST /api/ingreso` (ingreso
+  manual validando categoria). Auth: bearer `API_APP_TOKEN` (ya en 11A).
+  Decisión: soft delete en fijos (activo=false); `consumos.dolar` como
+  marcador legacy PAGADO=0 / PENDIENTE=NULL.
+- **ARQUITECTO**: helpers escritura en `api/_supabase.js`
+  (`supabaseInsert`, `supabasePatch` con `return=representation`).
+  Endpoints nuevos bajo `api/` con auth bearer reutilizado. `vercel.json`
+  extendido con 3 rutas POST. Frontend: `toggleEstadoPago` → POST /api/pago;
+  sección "Gestión" en Detalle con form ingreso manual + ABM fijos
+  (crear/editar/soft delete). `cargarFijos()` puebla select de ingresos.
+- **IMPLEMENTADOR**: `api/_supabase.js` (+ `supabaseInsert`/`supabasePatch`);
+  `api/pago.js`, `api/fijos.js`, `api/ingreso.js`; `vercel.json` +3 rutas;
+  `web/Index.html`: token via `<meta name="api-token">`, `toggleEstadoPago`
+  async fetch, sección Gestión (ingreso manual select+cantidad, fijos
+  listar/crear/editar/eliminar), `cargarFijos()` pobla select ingresos y
+  renderiza lista con botones editar/eliminar. `api/fijos.test.mjs` 19 tests.
+- **TESTER**: `node --test api/fijos.test.mjs` → **19/19 PASS** (pago 7,
+  fijos 8, ingreso 4). `node --test api/dashboard.test.mjs` 4/4 PASS.
+  Suite Python **144 passed / 7 skipped**; smoke **7/7 PASS**. `py_compile` OK.
+- **CODE REVIEW**: PASS. UI original preservada (solo añadida sección
+  Gestión). Escrituras validadas (categoria existe/activa, monto>0).
+  Soft delete seguro. `webhook.js` intacto. Sin secrets nuevos.
+- **GATE**: no requerido (no afecta producción). FASE 11C pendiente
+  (autenticación UI, deploy Vercel con secrets, validación E2E).
 
 ---
 

@@ -72,3 +72,51 @@ export function iconoPorEntidad(entidad) {
   if (e.includes("HIPOTECARIO")) return "local_fire_department";
   return "credit_card";
 }
+
+// FASE 11B: helpers de escritura (POST/PATCH) sobre PostgREST.
+// Usan service_role con BYPASSRLS. Llamador responsable de validación de negocio.
+
+export async function supabaseInsert(table, rows, { onConflict = "" } = {}) {
+  const { url, key } = supabaseConfig();
+  const qs = onConflict ? `?on_conflict=${encodeURIComponent(onConflict)}` : "";
+  const response = await fetch(`${url}/rest/v1/${table}${qs}`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=ignore-duplicates,return=representation",
+    },
+    body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
+  });
+  const text = await response.text();
+  const isJson = (response.headers.get("content-type") || "").includes("application/json");
+  const data = text ? (isJson ? JSON.parse(text) : text) : null;
+  if (!response.ok) {
+    const detail = typeof data === "string" ? data : JSON.stringify(data);
+    throw new Error(`Supabase INSERT HTTP ${response.status}: ${detail}`);
+  }
+  return data;
+}
+
+export async function supabasePatch(table, matchQuery, patchData) {
+  const { url, key } = supabaseConfig();
+  const response = await fetch(`${url}/rest/v1/${table}${matchQuery}`, {
+    method: "PATCH",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(patchData),
+  });
+  const text = await response.text();
+  const isJson = (response.headers.get("content-type") || "").includes("application/json");
+  const data = text ? (isJson ? JSON.parse(text) : text) : null;
+  if (!response.ok) {
+    const detail = typeof data === "string" ? data : JSON.stringify(data);
+    throw new Error(`Supabase PATCH HTTP ${response.status}: ${detail}`);
+  }
+  return data;
+}

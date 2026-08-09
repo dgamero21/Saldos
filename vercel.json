@@ -9,6 +9,18 @@
       "use": "@vercel/node"
     },
     {
+      "src": "api/pago.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "api/fijos.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "api/ingreso.js",
+      "use": "@vercel/node"
+    },
+    {
       "src": "web/**",
       "use": "@vercel/static"
     }
@@ -21,6 +33,18 @@
     {
       "src": "/api/dashboard",
       "dest": "api/dashboard.js"
+    },
+    {
+      "src": "/api/pago",
+      "dest": "api/pago.js"
+    },
+    {
+      "src": "/api/fijos",
+      "dest": "api/fijos.js"
+    },
+    {
+      "src": "/api/ingreso",
+      "dest": "api/ingreso.js"
     },
     {
       "src": "/(.*)",

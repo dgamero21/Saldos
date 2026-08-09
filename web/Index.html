@@ -31,6 +31,7 @@
             }
         }
     </script>
+    <meta name="api-token" content="__API_TOKEN__">
     <style>
         body { font-family: 'Inter', sans-serif; }
         .data-mono { font-family: 'JetBrains Mono', monospace; }
@@ -307,9 +308,44 @@
                     </div>
                 </div>
             </section>
-        </div>
 
-    </main>
+            <!-- SECCIÓN GESTIÓN: Ingreso Manual + Fijos -->
+            <section id="section-gestion" class="flex flex-col gap-4 pt-4 border-t border-outline-variant/20">
+                <h2 class="text-xs uppercase tracking-wider text-on-surface-variant font-bold">Gestión</h2>
+
+                <!-- Ingreso Manual -->
+                <div class="glass rounded-[1.2rem] p-4 flex flex-col gap-3 border border-outline-variant/30">
+                    <h3 class="text-xs uppercase tracking-wider text-primary font-bold">💰 Ingreso Manual</h3>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <select id="ingreso-tipo" class="flex-1 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50">
+                            <option value="" disabled selected>Categoría de ingreso</option>
+                        </select>
+                        <input id="ingreso-monto" type="number" step="0.01" min="0.01" placeholder="Monto" class="w-32 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right">
+                        <button onclick="crearIngreso()" class="bg-primary text-on-primary font-bold px-4 py-2 rounded-xl text-sm hover:bg-primary/80 active:scale-95 transition-all flex-shrink-0">Agregar</button>
+                    </div>
+                    <p id="ingreso-msg" class="text-[10px] text-on-surface-variant hidden"></p>
+                </div>
+
+                <!-- Fijos (Gastos/Ingresos Fijos) -->
+                <div class="glass rounded-[1.2rem] p-4 flex flex-col gap-3 border border-outline-variant/30">
+                    <div class="flex justify-between items-center">
+                        <h3 class="text-xs uppercase tracking-wider text-primary font-bold">📋 Gastos / Ingresos Fijos</h3>
+                        <button onclick="toggleFijosForm()" class="bg-primary/20 text-primary border border-primary/30 text-[10px] font-bold px-3 py-1 rounded-lg hover:bg-primary/30 transition-all">+ Nuevo</button>
+                    </div>
+                    <div id="fijos-form" class="hidden flex flex-col sm:flex-row gap-2">
+                        <select id="fijo-es-ingreso" class="flex-1 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50">
+                            <option value="false">Gasto Fijo</option>
+                            <option value="true">Ingreso Fijo</option>
+                        </select>
+                        <input id="fijo-tipo" type="text" placeholder="Nombre (ej: ALQUILER)" class="flex-1 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50">
+                        <input id="fijo-monto" type="number" step="0.01" min="0.01" placeholder="Monto fijo" class="w-28 bg-surface-variant/60 border border-outline-variant/40 rounded-xl px-3 py-2 text-sm text-on-background focus:outline-none focus:border-primary/50 text-right">
+                        <button onclick="crearFijo()" class="bg-primary text-on-primary font-bold px-4 py-2 rounded-xl text-sm hover:bg-primary/80 active:scale-95 transition-all flex-shrink-0">Guardar</button>
+                        <button onclick="toggleFijosForm()" class="text-on-surface-variant hover:text-primary text-sm font-bold">Cancelar</button>
+                    </div>
+                    <div id="fijos-lista" class="space-y-2"></div>
+                </div>
+            </section>
+        </div>
 
     <!-- BottomNavBar -->
     <nav class="fixed bottom-0 left-0 w-full flex justify-around items-center px-4 py-3 glass border-t-0 shadow-[0_-4px_16px_rgba(0,0,0,0.3)] z-50 pb-safe">
@@ -1208,17 +1244,28 @@
             });
         }
 
-        // FASE 11A: solo lectura. El toggle visual queda (UI intacta) pero no
-        // persiste: en lugar de google.script.run.marcarEstadoPago, solo se
-        // actualiza el estado local y se loguea que la escritura NO esta
-        // habilitada en esta fase (sin tocar el backend).
-        function toggleEstadoPago(hojaOrigen, rowId, nuevoEstado) {
+        // FASE 11B: toggleEstadoPago ahora persiste vía POST /api/pago.
+        async function toggleEstadoPago(hojaOrigen, rowId, nuevoEstado) {
             const item = AppState.raw.vencimientos.find(v => v.hojaOrigen === hojaOrigen && v.rowId === rowId);
             if (item) {
                 item.estado = nuevoEstado;
                 rebuildDashboardUI();
             }
-            console.info("[FASE 11A solo lectura] toggleEstadoPago no persiste (escrituras fuera de alcance).");
+            try {
+                const token = document.querySelector('meta[name="api-token"]')?.content || "";
+                const res = await fetch("/api/pago", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) },
+                    body: JSON.stringify({ hojaOrigen, rowId, estado: nuevoEstado })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error al actualizar estado");
+                console.info("[FASE 11B] Estado persistido:", data);
+            } catch (e) {
+                console.error("[FASE 11B] Error persistiendo estado:", e);
+                // Revertir UI si falla
+                if (item) { item.estado = item.estado === "PAGADO" ? "PENDIENTE" : "PAGADO"; rebuildDashboardUI(); }
+            }
         }
 
         function formatMoneda(valor, conDecimales = true) {
@@ -1227,6 +1274,202 @@
                 maximumFractionDigits: conDecimales ? 2 : 0
             });
         }
+
+        // FASE 11B: helpers de API
+        function getAuthHeaders() {
+            const token = document.querySelector('meta[name="api-token"]')?.content || "";
+            return { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) };
+        }
+
+        // --- Ingreso Manual ---
+        async function crearIngreso() {
+            const tipo = document.getElementById("ingreso-tipo").value;
+            const monto = parseFloat(document.getElementById("ingreso-monto").value);
+            const msgEl = document.getElementById("ingreso-msg");
+            if (!tipo || isNaN(monto) || monto <= 0) {
+                msgEl.textContent = "Completá categoría y monto válido";
+                msgEl.classList.remove("hidden", "text-green-400");
+                msgEl.classList.add("text-red-400");
+                return;
+            }
+            msgEl.classList.add("hidden");
+            try {
+                const res = await fetch("/api/ingreso", {
+                    method: "POST",
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ tipo, monto })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error al crear ingreso");
+                msgEl.textContent = "✅ Ingreso agregado";
+                msgEl.classList.remove("hidden", "text-red-400");
+                msgEl.classList.add("text-green-400");
+                document.getElementById("ingreso-monto").value = "";
+                // Recargar fijos para actualizar selector de ingresos
+                await cargarFijos();
+                // Recargar dashboard para ver el ingreso
+                await fetchDashboardRawData();
+            } catch (e) {
+                console.error("[ingreso] error:", e);
+                msgEl.textContent = "❌ " + (e.message || "Error");
+                msgEl.classList.remove("hidden", "text-green-400");
+                msgEl.classList.add("text-red-400");
+            }
+        }
+
+        // --- Fijos (Gastos/Ingresos Fijos) ---
+        let fijosEditandoId = null;
+
+        function toggleFijosForm() {
+            const form = document.getElementById("fijos-form");
+            const isHidden = form.classList.toggle("hidden");
+            if (!isHidden) {
+                document.getElementById("fijo-tipo").value = "";
+                document.getElementById("fijo-monto").value = "";
+                fijosEditandoId = null;
+            }
+        }
+
+        async function cargarFijos() {
+            try {
+                const token = document.querySelector('meta[name="api-token"]')?.content || "";
+                const res = await fetch("/api/fijos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) },
+                    body: JSON.stringify({ accion: "listar" })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error cargando fijos");
+                // Poblar selector de ingreso manual
+                const selectIngreso = document.getElementById("ingreso-tipo");
+                selectIngreso.innerHTML = '<option value="" disabled selected>Categoría de ingreso</option>';
+                data.data.filter(f => f.es_ingreso && f.activo).forEach(f => {
+                    const opt = document.createElement("option");
+                    opt.value = f.tipo;
+                    opt.textContent = f.tipo + (f.monto_fijo ? ` ($${f.monto_fijo.toLocaleString('es-AR')})` : "");
+                    selectIngreso.appendChild(opt);
+                });
+                renderFijos(data.data);
+            } catch (e) {
+                console.error("[fijos] error cargando:", e);
+            }
+        }
+
+        function renderFijos(lista) {
+            const container = document.getElementById("fijos-lista");
+            container.innerHTML = "";
+            if (!lista.length) {
+                container.innerHTML = '<p class="text-[10px] text-on-surface-variant text-center py-4">Sin fijos configurados</p>';
+                return;
+            }
+            lista.forEach(f => {
+                const card = document.createElement("div");
+                card.className = `glass rounded-xl p-3 flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between border ${f.activo ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5 opacity-60'}`;
+                card.innerHTML = `
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="text-xs font-bold ${f.es_ingreso ? 'text-green-400' : 'text-red-400'}">${f.es_ingreso ? '💰' : '💸'} ${f.tipo}</span>
+                            <span class="text-[10px] ${f.activo ? 'text-green-400' : 'text-red-400'} font-bold">${f.activo ? 'Activo' : 'Inactivo'}</span>
+                            <span class="text-[10px] text-on-surface-variant">${f.pertenece}</span>
+                        </div>
+                        <div class="text-sm font-bold text-primary data-mono">$${(f.monto_fijo || 0).toLocaleString('es-AR', {minimumFractionDigits: 2})}</div>
+                    </div>
+                    <div class="flex gap-1 flex-shrink-0">
+                        <button onclick="editarFijo(${f.id}, '${f.tipo.replace(/'/g, "\\'")}', ${f.monto_fijo || 0}, ${f.es_ingreso}, ${f.activo})" class="text-[10px] text-primary hover:underline">Editar</button>
+                        <button onclick="eliminarFijo(${f.id})" class="text-[10px] text-red-400 hover:underline">Eliminar</button>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        async function crearFijo() {
+            const tipo = document.getElementById("fijo-tipo").value.trim();
+            const monto = parseFloat(document.getElementById("fijo-monto").value);
+            const es_ingreso = document.getElementById("fijo-es-ingreso").value === "true";
+            if (!tipo || isNaN(monto) || monto <= 0) {
+                alert("Completá tipo y monto válido");
+                return;
+            }
+            try {
+                const token = document.querySelector('meta[name="api-token"]')?.content || "";
+                const res = await fetch("/api/fijos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) },
+                    body: JSON.stringify({ accion: "crear", tipo, monto_fijo: monto, es_ingreso })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error creando fijo");
+                toggleFijosForm();
+                await cargarFijos();
+            } catch (e) {
+                console.error("[fijos] error creando:", e);
+                alert("❌ " + (e.message || "Error"));
+            }
+        }
+
+        function editarFijo(id, tipo, monto, es_ingreso, activo) {
+            document.getElementById("fijo-es-ingreso").value = es_ingreso ? "true" : "false";
+            document.getElementById("fijo-tipo").value = tipo;
+            document.getElementById("fijo-monto").value = monto;
+            fijosEditandoId = id;
+            document.getElementById("fijos-form").classList.remove("hidden");
+            // Cambiar botón a "Actualizar"
+            const btn = document.querySelector('#fijos-form button[onclick="crearFijo()"]');
+            btn.textContent = "Actualizar";
+            btn.onclick = () => actualizarFijo(id);
+        }
+
+        async function actualizarFijo(id) {
+            const tipo = document.getElementById("fijo-tipo").value.trim();
+            const monto = parseFloat(document.getElementById("fijo-monto").value);
+            const es_ingreso = document.getElementById("fijo-es-ingreso").value === "true";
+            const activo = true; // Simplificación: siempre activo al editar
+            if (!tipo || isNaN(monto) || monto <= 0) {
+                alert("Completá tipo y monto válido");
+                return;
+            }
+            try {
+                const token = document.querySelector('meta[name="api-token"]')?.content || "";
+                const res = await fetch("/api/fijos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) },
+                    body: JSON.stringify({ accion: "actualizar", id, tipo, monto_fijo: monto, activo })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error actualizando");
+                toggleFijosForm();
+                await cargarFijos();
+            } catch (e) {
+                console.error("[fijos] error actualizando:", e);
+                alert("❌ " + (e.message || "Error"));
+            }
+        }
+
+        async function eliminarFijo(id) {
+            if (!confirm("¿Desactivar este fijo? (soft delete)")) return;
+            try {
+                const token = document.querySelector('meta[name="api-token"]')?.content || "";
+                const res = await fetch("/api/fijos", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", ...(token ? { "Authorization": "Bearer " + token } : {}) },
+                    body: JSON.stringify({ accion: "eliminar", id })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || "Error eliminando");
+                await cargarFijos();
+            } catch (e) {
+                console.error("[fijos] error eliminando:", e);
+                alert("❌ " + (e.message || "Error"));
+            }
+        }
+
+        // Cargar fijos al inicio
+        document.addEventListener("DOMContentLoaded", function() {
+            initUiListeners();
+            fetchDashboardRawData();
+            cargarFijos();
+        });
     </script>
 </body>
 </html>
