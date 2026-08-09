@@ -479,17 +479,10 @@
             AppState.raw = data;
             poblarSelects(data);
             
-            const hoy = new Date();
-            const anioActual = String(hoy.getFullYear());
-
-            AppState.filters.anio = [anioActual];
-            AppState.filters.mes = ["7"];
-            AppState.filters.pertenece = ["David"];
-
-            syncCheckboxes("dropdown-anio", [anioActual]);
-            syncCheckboxes("dropdown-mes", ["7"]);
-            syncCheckboxes("dropdown-pertenece", ["David"]);
-
+            // No hardcodear filtros que no coincidan con los datos reales.
+            // Dejar filtros vacíos para mostrar todos los datos disponibles.
+            AppState.filters = { search: "", anio: [], mes: [], entidad: [], pertenece: [], detalle: [] };
+            
             updateDropdownLabels();
             applyCrossfilters();
         }
