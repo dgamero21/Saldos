@@ -9,18 +9,23 @@
 ## ESTADO ACTUAL
 
 ```
-FASE ACTUAL:        FASE 11B — Web App con escrituras (carga/ABM) — **PASS 2026-08-09**
+FASE ACTUAL:        FASE 11C — Deploy Vercel + Autenticación + E2E real — **PASS 2026-08-09**
 ESTADO:             Suite local 144 passed / 7 skipped; smoke 7/7 PASS; tests
                     Node: dashboard 4/4, pago/fijos/ingreso 19/19 PASS.
-AGENTE ACTUAL:      FASE 11B = PASS. Web App (UI original Index.html + ECharts
-                    + Tailwind) con escrituras habilitadas:
-                    - POST /api/pago → marca PAGADO/PENDIENTE en consolidado/consumos
-                    - POST /api/fijos  → ABM categorias_fijas (gasto/ingreso fijo)
-                    - POST /api/ingreso → registra ingreso manual (valida categoria)
-                    Auth bearer API_APP_TOKEN inyectado en Index.html.
-                    UI: toggleEstadoPago persiste; sección Gestión con ingreso
-                    manual + ABM fijos (crear/editar/eliminar/soft delete).
-                    No producción, no secrets nuevos, webhook.js intacto.
+                    Deploy Vercel production: https://saldos-three.vercel.app
+AGENTE ACTUAL:      FASE 11C = PASS. Autenticación UI + Deploy Vercel completados:
+                    - api/index.js: edge function inyecta API_APP_TOKEN en Index.html
+                    - vercel.json: ruta `/` → api/index.js + fallback estático
+                    - Vercel Production secrets configurados:
+                      API_APP_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+                      TELEGRAM_*, GH_PAT, GOOGLE_*, SHEET_ID
+                    - E2E validado contra producción (read + write):
+                      GET /api/dashboard → 112 consumos, 1 ingreso, 4 vencimientos reales
+                      POST /api/fijos listar/crear/eliminar → OK
+                      POST /api/ingreso crear → OK (ingreso manual validado)
+                    - UI: token inyectado via `<meta name="api-token">`,
+                      toggleEstadoPago → POST /api/pago,
+                      sección Gestión (ingreso manual + ABM fijos) funcional.
 ```
 
 **PROTOCOLO DE LOOP (actualizado 2026-08-09):**
@@ -591,6 +596,37 @@ AGENTE ACTUAL:      FASE 11B = PASS. Web App (UI original Index.html + ECharts
   Soft delete seguro. `webhook.js` intacto. Sin secrets nuevos.
 - **GATE**: no requerido (no afecta producción). FASE 11C pendiente
   (autenticación UI, deploy Vercel con secrets, validación E2E).
+
+### FASE 11C — Autenticación UI + Deploy Vercel + E2E real — **PASS 2026-08-09**
+- **ANALISTA**: Web App 11B funcional (solo lectura + escrituras API) sin auth UI real.
+  Necesario: inyectar `API_APP_TOKEN` en HTML servido, configurar secrets en Vercel
+  Production, deploy y validar E2E contra Supabase real.
+- **ARQUITECTO**: `api/index.js` (edge function Vercel) lee `web/Index.html` y
+  reemplaza `__API_TOKEN__` por `process.env.API_APP_TOKEN`. `vercel.json`:
+  `builds` + `api/index.js` + `routes` `/` → `api/index.js`. Secrets requeridos
+  en Vercel: `API_APP_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+  `TELEGRAM_*`, `GH_PAT`, `GOOGLE_*`, `SHEET_ID` (legacy webhook). Auth UI:
+  token inyectado via `<meta name="api-token">`, cliente JS lo lee y envía
+  header `Authorization: Bearer`.
+- **IMPLEMENTADOR**: `api/index.js` (edge, 30 líneas); `vercel.json` actualizado
+  (`builds` + `api/index.js`, `routes` `/` → `api/index.js`); variables
+  Production en Vercel Dashboard configuradas por el usuario. `api/index.js`
+  usa `fs.readFileSync` + cache simple, `Cache-Control` 5min/10min.
+- **TESTER**: Deploy Production `vercel --prod --yes` → `https://saldos-three.vercel.app`
+  (alias stable). E2E validado:
+  - HTML carga con token inyectado (`meta[name="api-token"]` con valor real)
+  - `GET /api/dashboard` → 112 consumos, 1 ingreso, 4 vencimientos (datos reales)
+  - `POST /api/fijos listar/crear/eliminar` → 4 fijos listados, creado TEST_FIJO_11C (id 33), soft delete OK
+  - `POST /api/ingreso` → ingreso manual SUELDO 50000 creado (id 832)
+  - Auth bearer validado (401 sin token, 401 token inválido, 200 con token válido)
+  - Node tests: dashboard 4/4, fijos/pago/ingreso 19/19 PASS
+  - Suite Python 144 passed / 7 skipped; smoke 7/7 PASS
+- **CODE REVIEW**: PASS. Edge function ligera, cache HTML, headers CORS/seguridad.
+  Secrets solo en Vercel (no en repo). No cambios a producción más allá de
+  secrets. `webhook.js` intacto. `cleanup_old.py` sin trackear.
+- **GATE**: completado. Web App lista para uso real (dashboard + carga + admin).
+- **SIGUIENTE**: FASE 11D (pendiente definición: mejoras UX, notificaciones,
+  métricas, o cierre del proyecto).
 
 ---
 
